@@ -1,0 +1,6 @@
+{
+  "name": "Minecraft Flipper Web Panel",
+  "description": "A web control panel for Frikadellen BAF, an automated Minecraft ah and bazaar flipper.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
