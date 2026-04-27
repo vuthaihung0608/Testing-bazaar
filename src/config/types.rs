@@ -317,6 +317,7 @@ impl Default for Config {
             bazaar_tax_rate: default_bazaar_tax_rate(),
             auction_listing_delay_ms: default_auction_listing_delay_ms(),
             enable_bazaar_flips: true,
+            bazaar_purse_limit_millions: default_bazaar_purse_limit_millions(),
             enable_ah_flips: true,
             bed_spam: false,
             skip: false,
