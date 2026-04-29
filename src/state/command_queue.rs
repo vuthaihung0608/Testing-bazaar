@@ -246,12 +246,12 @@ impl CommandQueue {
     /// Return a list of all bazaar buy orders currently queued or executing.
     /// This prevents the auto-bazaar loop from repeatedly queuing orders
     /// for the same item while the first order is still waiting or in progress.
-    pub fn get_bazaar_buy_orders_in_queue(&self) -> std::collections::HashSet<String> {
-        let mut items = std::collections::HashSet::new();
+    pub fn get_bazaar_buy_orders_in_queue(&self) -> Vec<(String, f64)> {
+        let mut items = Vec::new();
         
         let mut check_cmd = |cmd: &QueuedCommand| {
-            if let CommandType::BazaarBuyOrder { item_name, .. } = &cmd.command_type {
-                items.insert(item_name.clone());
+            if let CommandType::BazaarBuyOrder { item_name, amount, price_per_unit, .. } = &cmd.command_type {
+                items.push((item_name.clone(), *amount as f64 * *price_per_unit));
             }
         };
 

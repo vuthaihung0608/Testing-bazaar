@@ -212,12 +212,35 @@ fn parse_bz_list_flip_detail(line: &str) -> Option<(String, i64, u32)> {
 ///
 /// We look for `"Total Profit: "` and parse the short-number value after it.
 fn parse_cofl_bz_h_total_profit(clean_msg: &str) -> Option<i64> {
+    if !clean_msg.contains("Bazaar Profit History") {
+        return None;
+    }
+
+    // Verify it is for < 1 day (e.g., "(last <1 days)" or "(last 0.05 days)")
+    if let Some(last_idx) = clean_msg.find("(last ") {
+        let after_last = &clean_msg[last_idx + 6..];
+        if let Some(days_end) = after_last.find(" days)") {
+            let days_str = &after_last[..days_end];
+            if days_str == "7" {
+                return None; // explicitly ignore manual /cofl bz h (which defaults to 7 days)
+            }
+            if days_str != "<1" {
+                if let Ok(days_val) = days_str.parse::<f64>() {
+                    // Only accept if it's less than 1 day as requested
+                    if days_val >= 1.0 {
+                        return None;
+                    }
+                }
+            }
+        }
+    }
+
     let prefix = "Total Profit: ";
     let idx = clean_msg.find(prefix)?;
     let after = &clean_msg[idx + prefix.len()..];
     // Take until the next whitespace or end of string.
     let value_str: String = after.chars()
-        .take_while(|c| !c.is_whitespace())
+        .take_while(|c| !c.is_whitespace() && *c != '\n' && *c != '\r')
         .collect();
     parse_short_number(&value_str)
 }
@@ -1372,6 +1395,22 @@ async fn main() -> Result<()> {
 
                             // Auto-sell collected items
                             if actual_amount > 0 {
+                                // If there is an existing open SELL order for this item, cancel it first
+                                // to consolidate the amounts and avoid multiple separate sell orders.
+                                let current_orders = bazaar_tracker_events.get_orders();
+                                let has_existing_sell = current_orders.iter().any(|o| o.item_name.eq_ignore_ascii_case(&item_name) && !o.is_buy_order);
+                                if has_existing_sell {
+                                    command_queue_clone.enqueue(
+                                        frikadellen_baf::types::CommandType::ManageOrders {
+                                            cancel_open: true,
+                                            target_item: Some((item_name.clone(), false))
+                                        },
+                                        frikadellen_baf::types::CommandPriority::High,
+                                        true
+                                    );
+                                    tracing::info!("[BazaarAuto] Cancelling existing sell order for {} to consolidate with newly collected items", item_name);
+                                }
+
                                 command_queue_clone.enqueue(
                                     frikadellen_baf::types::CommandType::BazaarSellOrder {
                                         item_name: item_name.clone(),
@@ -1566,7 +1605,7 @@ async fn main() -> Result<()> {
                             // We cancelled a BUY order (likely outbid). We should re-buy the remaining amount!
                             if order.amount > 0 {
                                 let pending = command_queue_clone.get_bazaar_buy_orders_in_queue();
-                                if pending.iter().any(|n| n.eq_ignore_ascii_case(&item_name)) {
+                                if pending.iter().any(|(n, _cost)| n.eq_ignore_ascii_case(&item_name)) {
                                     tracing::info!("[BazaarAuto] Skipping auto-rebuy for {} because a BuyOrder is already queued (assumed combined)", item_name);
                                 } else {
                                     command_queue_clone.enqueue(
@@ -1974,10 +2013,9 @@ async fn main() -> Result<()> {
                                     if let Ok(acc) = accum.lock() {
                                         let (total, count, _) = *acc;
                                         if count > 0 {
-                                            // Use the `/cofl bz l` total as the authoritative
-                                            // BZ session profit (replaces local calculation).
-                                            pt.set_bz_total(total);
-                                            tracing::info!("[BZList] Updated BZ profit from /cofl bz l: {} coins ({} flips)", total, count);
+                                            // We no longer rely on `/cofl bz l` for authoritative total profit;
+                                            // we rely exclusively on `/cofl bz h` (Bazaar Profit History).
+                                            tracing::info!("[BZList] Parsed BZ profit from /cofl bz l: {} coins ({} flips), leaving session total unchanged here", total, count);
                                             let (color, sign) = if total >= 0 { ("§a", "+") } else { ("§c", "") };
                                             let summary = format!(
                                                 "§f[§4BAF§f]: §6[BZ List] §7{} flips, total profit: {}{}{}",
@@ -2037,7 +2075,7 @@ async fn main() -> Result<()> {
                                     let mut existing_sell_amount = 0;
                                     if !skip {
                                         if effective_is_buy {
-                                            let is_pending = command_queue_clone.get_bazaar_buy_orders_in_queue().iter().any(|n| n.eq_ignore_ascii_case(&rec.item_name));
+                                            let is_pending = command_queue_clone.get_bazaar_buy_orders_in_queue().iter().any(|(n, _cost)| n.eq_ignore_ascii_case(&rec.item_name));
                                             if is_pending {
                                                 debug!("Skipping BUY bazaar flip from chat — already pending in queue: {}", rec.item_name);
                                                 skip = true;
@@ -3107,11 +3145,10 @@ async fn main() -> Result<()> {
                         active_buy_items.insert(order.item_name.clone());
                     }
                 }
-                // Also prevent duplicates by checking pending queued buy orders.
-                // We don't add their cost to escrow_used yet because they haven't been placed,
-                // but we prevent queuing another!
+                
                 let pending_orders = command_queue_bz.get_bazaar_buy_orders_in_queue();
-                for item in pending_orders {
+                for (item, cost) in pending_orders {
+                    escrow_used += cost;
                     active_buy_items.insert(item);
                 }
 
@@ -3121,36 +3158,57 @@ async fn main() -> Result<()> {
                 }
                 
                 let available_budget = purse.min(limit - escrow_used).max(0.0);
-                tracing::info!("[BazaarAuto] Budget calcs - purse: {}, limit: {}, escrow: {}, avail: {}", purse, limit, escrow_used, available_budget);
+                tracing::info!("[BazaarAuto] Budget calcs - purse: {:.1}, limit: {:.1}, escrow: {:.1}, avail: {:.1}", purse, limit, escrow_used, available_budget);
 
                 // 3. Place buy orders
                 if !bazaar_flips_paused_bz.load(std::sync::atomic::Ordering::Relaxed) && !top_items_copy.is_empty() {
                     let mut items_to_buy = Vec::new();
                     
                     let active_orders_count = active_buy_items.len();
-                    let remaining_orders_allowed = max_orders.saturating_sub(active_orders_count);
+                    let remaining_orders_allowed = max_orders;
                     
-                    tracing::info!("[BazaarAuto] Orders allowed: {}, Active count: {}", remaining_orders_allowed, active_orders_count);
+                    tracing::info!("[BazaarAuto] Orders limit: {}, Active count: {}", remaining_orders_allowed, active_orders_count);
 
                     if remaining_orders_allowed > 0 {
+                        let mut active_count = active_orders_count;
                         for (item_name, _profit, api_sell) in &top_items_copy {
-                            if items_to_buy.len() >= remaining_orders_allowed {
+                            if active_count >= remaining_orders_allowed && !active_buy_items.contains(item_name) {
                                 break;
                             }
                             
-                            // skip if we already have an active buy order for this item to avoid repetitive orders
-                            if active_buy_items.contains(item_name) {
-                                tracing::info!("[BazaarAuto] Skipping '{}' (already active)", item_name);
-                                continue;
-                            }
-                            
-                            // skip if the item is blacklisted (failed requirements previously)
+                            // check if the item is blacklisted (failed requirements previously)
                             if bz_blacklisted_items_calc.lock().await.contains(&item_name.to_lowercase()) {
                                 tracing::info!("[BazaarAuto] Skipping '{}' (blacklisted due to requirement failure)", item_name);
                                 continue;
                             }
 
                             let c_i = api_sell + 0.1; // top order + 0.1
+                            
+                            if active_buy_items.contains(item_name) {
+                                // Find current order price
+                                let current_price = current_orders.iter()
+                                    .find(|o| o.item_name.eq_ignore_ascii_case(item_name) && o.is_buy_order)
+                                    .map(|o| o.price_per_unit)
+                                    .unwrap_or(0.0);
+                                
+                                if c_i > current_price + 0.1 && current_price > 0.0 {
+                                    tracing::info!("[BazaarAuto] Updating '{}' buy order. Old: {:.1}, New: {:.1}", item_name, current_price, c_i);
+                                    command_queue_bz.enqueue(
+                                        CommandType::ManageOrders {
+                                            cancel_open: true,
+                                            target_item: Some((item_name.clone(), true))
+                                        },
+                                        CommandPriority::Normal,
+                                        true
+                                    );
+                                    // we can let it queue a new one, but we shouldn't bump active_count since it replaces it
+                                } else {
+                                    continue;
+                                }
+                            } else {
+                                active_count += 1;
+                            }
+
                             if c_i > 0.0 {
                                 if c_i > available_budget {
                                     tracing::info!("[BazaarAuto] Skipping '{}' (requires {:.1}, but total budget is {:.1})", item_name, c_i, available_budget);
