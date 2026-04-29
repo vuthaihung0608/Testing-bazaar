@@ -1,12 +1,12 @@
-/// Window handler for GUI interaction
-/// 
-/// This module provides functionality for:
-/// - Parsing window slots and finding items by name
-/// - Handling window opening sequences
-/// - Waiting for windows with timeout
-/// - Clicking specific slots with proper packet format
-/// 
-/// Preserves all packet-driven logic from the TypeScript implementation.
+//! Window handler for GUI interaction
+//! 
+//! This module provides functionality for:
+//! - Parsing window slots and finding items by name
+//! - Handling window opening sequences
+//! - Waiting for windows with timeout
+//! - Clicking specific slots with proper packet format
+//! 
+//! Preserves all packet-driven logic from the TypeScript implementation.
 
 use anyhow::{anyhow, Result};
 use std::time::Duration;

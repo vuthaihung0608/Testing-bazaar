@@ -1,6 +1,6 @@
-/// Inventory management module
-/// 
-/// Handles inventory operations and item tracking.
+//! Inventory management module
+//! 
+//! Handles inventory operations and item tracking.
 
 pub mod manager;
 

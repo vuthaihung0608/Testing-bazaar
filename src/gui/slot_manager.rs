@@ -1,8 +1,8 @@
-/// Slot manager for handling GUI slot positions and translations
-/// 
-/// This module defines standard slot positions used across different window types
-/// in the Hypixel SkyBlock GUI system. Slot numbers are preserved exactly from
-/// the TypeScript implementation to ensure packet compatibility.
+//! Slot manager for handling GUI slot positions and translations
+//! 
+//! This module defines standard slot positions used across different window types
+//! in the Hypixel SkyBlock GUI system. Slot numbers are preserved exactly from
+//! the TypeScript implementation to ensure packet compatibility.
 
 use std::collections::HashMap;
 use tracing::warn;
@@ -73,9 +73,9 @@ impl WindowKind {
         };
 
         match clean_title {
-            t if t == "BIN Auction View" => WindowKind::BinAuctionView,
-            t if t == "Confirm Purchase" => WindowKind::ConfirmPurchase,
-            t if t == "Auction View" => WindowKind::AuctionView,
+            "BIN Auction View" => WindowKind::BinAuctionView,
+            "Confirm Purchase" => WindowKind::ConfirmPurchase,
+            "Auction View" => WindowKind::AuctionView,
             t if t.starts_with("Bazaar") => WindowKind::Bazaar,
             t if t.contains("Manage") && t.contains("Orders") => WindowKind::ManageOrders,
             _ => WindowKind::Unknown(clean_title.to_string()),
@@ -136,7 +136,7 @@ impl SlotManager {
         let window_key = format!("{:?}", window_kind);
         self.mappings
             .entry(window_key)
-            .or_insert_with(HashMap::new)
+            .or_default()
             .insert(slot_name, physical_slot);
     }
 }

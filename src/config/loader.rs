@@ -92,6 +92,12 @@ impl ConfigLoader {
     }
 }
 
+impl Default for ConfigLoader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::ConfigLoader;
@@ -103,11 +109,5 @@ mod tests {
             .expect("config with unknown field should still parse");
         // Known defaults still apply
         assert!(!config.freemoney_enabled());
-    }
-}
-
-impl Default for ConfigLoader {
-    fn default() -> Self {
-        Self::new()
     }
 }

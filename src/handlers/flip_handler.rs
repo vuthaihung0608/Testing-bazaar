@@ -1,14 +1,14 @@
-/// Auction flip handler
-/// 
-/// Handles auction house flip recommendations from Coflnet:
-/// - Processes flip recommendations with bed spam support
-/// - Navigates to BIN Auction View window
-/// - Clicks "Buy Item Right Now" button (slot 31)
-/// - Clicks confirm button (slot 11)
-/// - Tracks purchase timing
-/// - Implements skip logic (pre-click optimization)
-/// 
-/// Preserves exact slot numbers and timing from TypeScript implementation.
+//! Auction flip handler
+//! 
+//! Handles auction house flip recommendations from Coflnet:
+//! - Processes flip recommendations with bed spam support
+//! - Navigates to BIN Auction View window
+//! - Clicks "Buy Item Right Now" button (slot 31)
+//! - Clicks confirm button (slot 11)
+//! - Tracks purchase timing
+//! - Implements skip logic (pre-click optimization)
+//! 
+//! Preserves exact slot numbers and timing from TypeScript implementation.
 
 use anyhow::{anyhow, Result};
 use parking_lot::RwLock;

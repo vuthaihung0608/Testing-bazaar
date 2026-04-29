@@ -1,3 +1,12 @@
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::type_complexity)]
+#![allow(clippy::manual_range_contains)]
+#![allow(clippy::if_same_then_else)]
+#![allow(clippy::needless_borrow)]
+#![allow(clippy::unnecessary_map_or)]
+#![allow(clippy::unnecessary_sort_by)]
+#![allow(clippy::identity_op)]
+
 use anyhow::{anyhow, Result};
 use azalea::prelude::*;
 use azalea_protocol::packets::game::{

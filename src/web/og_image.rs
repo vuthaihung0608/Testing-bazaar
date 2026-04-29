@@ -1,8 +1,8 @@
-/// Server-side OG image generator.
-///
-/// Produces a 1200×630 PNG stats card for OpenGraph / Discord embeds.
-/// Uses a built-in 5×7 bitmap font (scaled up) so no external font
-/// files or heavy dependencies are needed — only the `image` crate.
+//! Server-side OG image generator.
+//!
+//! Produces a 1200×630 PNG stats card for OpenGraph / Discord embeds.
+//! Uses a built-in 5×7 bitmap font (scaled up) so no external font
+//! files or heavy dependencies are needed — only the `image` crate.
 
 use image::{ImageBuffer, Rgba, RgbaImage};
 use std::io::Cursor;
@@ -195,6 +195,7 @@ fn draw_rect_outline(
 
 /// Draw a line between two points using Bresenham's algorithm.
 /// `dashed`: if true, alternates 4px on / 4px off.
+#[allow(clippy::too_many_arguments)]
 fn draw_line(
     img: &mut RgbaImage,
     x0: u32,
@@ -216,7 +217,7 @@ fn draw_line(
     let half_t = thickness / 2;
 
     loop {
-        let visible = !dashed || (step / 4) % 2 == 0;
+        let visible = !dashed || (step / 4).is_multiple_of(2);
         if visible {
             for dt in 0..thickness {
                 let py = (cy + dt as i64 - half_t as i64).max(0) as u32;

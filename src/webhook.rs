@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_arguments)]
 use once_cell::sync::Lazy;
 use tracing::warn;
 

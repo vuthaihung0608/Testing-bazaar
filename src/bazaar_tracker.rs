@@ -46,6 +46,12 @@ pub struct BazaarOrderTracker {
     bz_list_profits: Arc<RwLock<HashMap<String, (i64, u32)>>>,
 }
 
+impl Default for BazaarOrderTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BazaarOrderTracker {
     pub fn new() -> Self {
         let tracker = Self {
@@ -109,15 +115,11 @@ impl BazaarOrderTracker {
     /// so the caller can use price/amount for profit calculation.
     pub fn remove_order(&self, item_name: &str, is_buy_order: bool) -> Option<TrackedBazaarOrder> {
         let mut orders = self.orders.write();
-        let result = if let Some(pos) = orders.iter().rposition(|o| {
+        let result = orders.iter().rposition(|o| {
             (o.status == "open" || o.status == "filled")
                 && o.is_buy_order == is_buy_order
                 && normalize_for_match(&o.item_name) == normalize_for_match(item_name)
-        }) {
-            Some(orders.remove(pos))
-        } else {
-            None
-        };
+        }).map(|pos| orders.remove(pos));
         drop(orders);
         self.save_orders_to_disk();
         result
@@ -230,8 +232,7 @@ impl BazaarOrderTracker {
         for (key, data_entries) in &ingame_data {
             let tracked = kept_counts.get(key).copied().unwrap_or(0);
             let needed = data_entries.len();
-            for idx in tracked..needed {
-                let (amount, price) = data_entries[idx];
+            for (amount, price) in data_entries.iter().take(needed).skip(tracked) {
                 // Use title case for the item name from the first matching ingame order
                 let display_name = ingame_orders.iter()
                     .find(|(n, b, _, _)| normalize_for_match(n) == key.0 && *b == key.1)
@@ -239,8 +240,8 @@ impl BazaarOrderTracker {
                     .unwrap_or_else(|| key.0.clone());
                 orders.push(TrackedBazaarOrder {
                     item_name: display_name,
-                    amount,
-                    price_per_unit: price,
+                    amount: *amount,
+                    price_per_unit: *price,
                     is_buy_order: key.1,
                     status: "open".to_string(),
                     placed_at: now,

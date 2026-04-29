@@ -199,7 +199,7 @@ async fn check_auth(
     next: Next,
 ) -> Response {
     // No password configured → skip auth entirely
-    if s.web_gui_password.as_ref().map_or(true, |p| p.is_empty()) {
+    if s.web_gui_password.as_ref().is_none_or(|p| p.is_empty()) {
         return next.run(req).await;
     }
 
