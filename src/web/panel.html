@@ -414,6 +414,7 @@ a{color:var(--accent2);text-decoration:none}
     <!-- Category: Auction House -->
     <div class="card" style="margin-bottom:16px">
         <h2>🏛️ Auction House</h2>
+        <div class="cfg-row"><label class="cfg-label">Enable AH Flips</label><label class="toggle"><input type="checkbox" id="cfg-enable_ah_flips"><span class="slider"></span></label></div>
         <div class="cfg-row"><label class="cfg-label" for="cfg-auction_duration_hours">Auction Duration (hours)</label><input class="cfg-input" id="cfg-auction_duration_hours" type="number" min="1" max="48"></div>
         <div class="cfg-row"><label class="cfg-label" for="cfg-auction_listing_delay_ms">Auction Listing Delay (ms)</label><input class="cfg-input" id="cfg-auction_listing_delay_ms" type="number" min="500"></div>
         <div class="cfg-row"><label class="cfg-label" for="cfg-max_items_in_inventory">Max Flip Items in Inventory</label><input class="cfg-input" id="cfg-max_items_in_inventory" type="number" min="0" max="28"></div>
@@ -422,6 +423,9 @@ a{color:var(--accent2);text-decoration:none}
     <!-- Category: Bazaar -->
     <div class="card" style="margin-bottom:16px">
         <h2>📦 Bazaar</h2>
+        <div class="cfg-row"><label class="cfg-label">Enable Bazaar Flips</label><label class="toggle"><input type="checkbox" id="cfg-enable_bazaar_flips"><span class="slider"></span></label></div>
+        <div class="cfg-row"><label class="cfg-label" for="cfg-bazaar_active_flips_count">Active Flips Count</label><input class="cfg-input" id="cfg-bazaar_active_flips_count" type="number" min="1" max="15"></div>
+        <div class="cfg-row"><label class="cfg-label" for="cfg-bazaar_purse_limit_millions">Purse Limit (Millions)</label><input class="cfg-input" id="cfg-bazaar_purse_limit_millions" type="number" min="1"></div>
         <div class="cfg-row"><label class="cfg-label" for="cfg-bazaar_order_check_interval_seconds">Order Check Interval (seconds)</label><input class="cfg-input" id="cfg-bazaar_order_check_interval_seconds" type="number" min="10"></div>
         <div class="cfg-row"><label class="cfg-label" for="cfg-bazaar_order_cancel_minutes_per_million">Cancel Minutes Per Million</label><input class="cfg-input" id="cfg-bazaar_order_cancel_minutes_per_million" type="number" min="1"></div>
         <div class="cfg-row"><label class="cfg-label" for="cfg-bazaar_tax_rate">Tax Rate (%)</label><input class="cfg-input" id="cfg-bazaar_tax_rate" type="number" step="0.05" min="0" max="5"></div>
@@ -1409,8 +1413,10 @@ const CONFIG_FIELDS = {
     bed_multiple_clicks_delay: {type:'int', default:0},
     bed_pre_click_ms: {type:'int', default:30},
     bazaar_order_check_interval_seconds: {type:'int', default:60},
+    bazaar_active_flips_count: {type:'int', default:7},
     bazaar_order_cancel_minutes_per_million: {type:'int', default:1},
     bazaar_tax_rate: {type:'float', default:1.25},
+    bazaar_purse_limit_millions: {type:'int', default:100},
     auction_listing_delay_ms: {type:'int', default:1500},
     auction_duration_hours: {type:'int', default:24},
     max_items_in_inventory: {type:'int', default:12},
@@ -1420,6 +1426,8 @@ const CONFIG_FIELDS = {
     humanization_min_break_minutes: {type:'int', default:2},
     humanization_max_break_minutes: {type:'int', default:10},
     // booleans
+    enable_ah_flips: {type:'bool', default:true},
+    enable_bazaar_flips: {type:'bool', default:true},
     bed_spam: {type:'bool', default:false},
     use_cofl_chat: {type:'bool', default:true},
     enable_console_input: {type:'bool', default:true},

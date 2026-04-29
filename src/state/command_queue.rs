@@ -243,6 +243,48 @@ impl CommandQueue {
         self.notify.notified()
     }
 
+    /// Return a list of all bazaar buy orders currently queued or executing.
+    /// This prevents the auto-bazaar loop from repeatedly queuing orders
+    /// for the same item while the first order is still waiting or in progress.
+    pub fn get_bazaar_buy_orders_in_queue(&self) -> std::collections::HashSet<String> {
+        let mut items = std::collections::HashSet::new();
+        
+        let mut check_cmd = |cmd: &QueuedCommand| {
+            if let CommandType::BazaarBuyOrder { item_name, .. } = &cmd.command_type {
+                items.insert(item_name.clone());
+            }
+        };
+
+        if let Some(ref cur) = *self.current_command.read() {
+            check_cmd(cur);
+        }
+        for cmd in self.queue.read().iter() {
+            check_cmd(cmd);
+        }
+        
+        items
+    }
+
+    /// Return a list of all bazaar sell orders currently queued or executing.
+    pub fn get_bazaar_sell_orders_in_queue(&self) -> std::collections::HashSet<String> {
+        let mut items = std::collections::HashSet::new();
+        
+        let mut check_cmd = |cmd: &QueuedCommand| {
+            if let CommandType::BazaarSellOrder { item_name, .. } = &cmd.command_type {
+                items.insert(item_name.clone());
+            }
+        };
+
+        if let Some(ref cur) = *self.current_command.read() {
+            check_cmd(cur);
+        }
+        for cmd in self.queue.read().iter() {
+            check_cmd(cmd);
+        }
+        
+        items
+    }
+
     /// Return a snapshot of the queue for the web panel.
     /// Includes the currently executing command (if any) followed by all
     /// queued commands, each described by its display name, priority, and age.

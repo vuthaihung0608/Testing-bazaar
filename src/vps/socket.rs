@@ -27,6 +27,7 @@ pub struct VpsSocket {
 
 /// Runtime state for a single managed instance.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct ManagedInstance {
     instance: Instance,
     config: Option<serde_json::Value>,

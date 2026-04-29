@@ -163,6 +163,7 @@ static SOLD_BUYER_RE: Lazy<regex::Regex> =
 
 /// Information about the most recently opened window, set by the ECS observer.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct WindowOpenInfo {
     pub window_id: i32,
     pub title: String,
@@ -299,6 +300,8 @@ pub struct BotClient {
     /// Retry counter for "You already have an item in the auction slot!" errors.
     /// Shared with BotClientState so clearing the blocked flag also resets retries.
     auction_stuck_item_retries: Arc<std::sync::atomic::AtomicU8>,
+    /// Track the item name that we are operating on in the bazaar
+    bazaar_item_name: Arc<RwLock<String>>,
     /// Set when the server rejects an order placement (e.g. "Your price isn't
     /// competitive enough").  Cleared before each confirm-click so only the
     /// response to the *current* placement attempt is captured.
@@ -472,6 +475,7 @@ impl BotClient {
             auction_at_limit: Arc::new(AtomicBool::new(false)),
             auction_slot_blocked: Arc::new(AtomicBool::new(false)),
             auction_stuck_item_retries: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            bazaar_item_name: Arc::new(RwLock::new(String::new())),
             bazaar_order_rejected: Arc::new(AtomicBool::new(false)),
             cached_inventory_json: Arc::new(RwLock::new(None)),
             auto_cookie_hours: Arc::new(RwLock::new(0)),
@@ -553,7 +557,7 @@ impl BotClient {
             claiming_purchased: Arc::new(RwLock::new(false)),
             claim_sold_uuid: Arc::new(RwLock::new(None)),
             claim_sold_uuid_queue: Arc::new(RwLock::new(VecDeque::new())),
-            bazaar_item_name: Arc::new(RwLock::new(String::new())),
+            bazaar_item_name: self.bazaar_item_name.clone(),
             bazaar_amount: Arc::new(RwLock::new(0)),
             bazaar_price_per_unit: Arc::new(RwLock::new(0.0)),
             bazaar_is_buy_order: Arc::new(RwLock::new(true)),
@@ -818,6 +822,12 @@ impl BotClient {
     /// Clears the bazaar daily sell value limit flag (e.g. at 0:00 UTC reset).
     pub fn clear_bazaar_daily_limit(&self) {
         self.bazaar_daily_limit.store(false, Ordering::Relaxed);
+    }
+
+    /// Get the current bazaar item name being operated on.
+    pub fn get_bazaar_item_name(&self) -> Option<String> {
+        let name = self.bazaar_item_name.read().clone();
+        if name.is_empty() { None } else { Some(name) }
     }
 
     /// Clears the bazaar order-limit flag.  Used by the idle-inventory
@@ -1093,6 +1103,7 @@ pub struct BotClientState {
     /// Time when we joined SkyBlock (for timeout detection)
     pub skyblock_join_time: Arc<RwLock<Option<tokio::time::Instant>>>,
     /// WebSocket client for sending messages (e.g., inventory uploads)
+    #[allow(dead_code)]
     pub ws_client: Option<CoflWebSocket>,
     /// true = claiming purchased item, false = claiming sold item
     pub claiming_purchased: Arc<RwLock<bool>>,
@@ -1726,6 +1737,7 @@ fn find_slot_by_lore_contains(slots: &[azalea_inventory::ItemStack], needle: &st
 /// slot 31 of the BIN Auction View.  Hypixel typically shows the time in the item's
 /// lore as a "M:SS" or "MM:SS" pattern (e.g. "0:45", "1:00").
 /// Returns `None` if no time can be extracted.
+#[allow(dead_code)]
 fn parse_bed_remaining_secs(item: &azalea_inventory::ItemStack) -> Option<u64> {
     let name = get_item_display_name_from_slot(item).unwrap_or_default();
     let lore = get_item_lore_from_slot(item);
@@ -1733,6 +1745,7 @@ fn parse_bed_remaining_secs(item: &azalea_inventory::ItemStack) -> Option<u64> {
     parse_bed_remaining_secs_from_text(&all_text)
 }
 
+#[allow(dead_code)]
 fn parse_bed_remaining_secs_from_text(all_text: &str) -> Option<u64> {
     // Match "M:SS" or "MM:SS" — the first such pattern is the time remaining
     let mut chars = all_text.chars().peekable();
@@ -2089,8 +2102,15 @@ fn parse_order_amount_from_lore(lore: &[String]) -> Option<u64> {
     for line in lore {
         let clean = remove_mc_colors(line);
         let lower = clean.to_lowercase();
-        if let Some(idx) = lower.find("order amount:") {
-            let after = &clean[idx + "order amount:".len()..].trim_start();
+        if let Some(idx) = lower.find("order amount:").or_else(|| lower.find("offer amount:")).or_else(|| lower.find("amount:")) {
+            let prefix_len = if lower[idx..].starts_with("order amount:") {
+                "order amount:".len()
+            } else if lower[idx..].starts_with("offer amount:") {
+                "offer amount:".len()
+            } else {
+                "amount:".len()
+            };
+            let after = &clean[idx + prefix_len..].trim_start();
             // Strip trailing 'x' and commas, e.g. "2,560x" → "2560"
             let num_str: String = after.chars()
                 .take_while(|c| c.is_ascii_digit() || *c == ',')
@@ -3409,10 +3429,80 @@ async fn execute_command(
             *state.bot_state.write() = BotState::CancellingAuction;
         }
         CommandType::SellInventoryBz => {
-            info!("[SellInventoryBz] Opening /bz to sell inventory instantly");
-            *state.bazaar_step.write() = BazaarStep::Initial;
-            send_chat_command(bot, "/bz");
-            *state.bot_state.write() = BotState::SellingInventoryBz;
+            info!("[SellInventoryBz] Queuing sell offers for all items in inventory");
+            let menu = bot.menu();
+            let all_slots = menu.slots();
+            let player_range = menu.player_slots_range();
+
+            let mut items_to_sell: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+
+            for item in all_slots[player_range.clone()].iter() {
+                if item.is_empty() { continue; }
+                let name = match get_item_display_name_from_slot(item) {
+                    Some(n) => n,
+                    None => continue,
+                };
+                let clean_name = crate::utils::remove_minecraft_colors(&name);
+                
+                // Skip untradable / menu items
+                if clean_name.contains("SkyBlock Menu") || 
+                   clean_name.contains("Recipe Book") || 
+                   clean_name.contains("Quiver") ||
+                   clean_name.contains("Accessory Bag") ||
+                   clean_name.contains("Potion Bag") ||
+                   clean_name.contains("Fishing Bag") ||
+                   clean_name.contains("Wardrobe") ||
+                   clean_name.contains("Personal Vault") {
+                    continue;
+                }
+
+                if let Some(item_data) = item.as_present() {
+                    let nbt_data = extract_item_nbt_components(item_data);
+                    let raw_uuid = nbt_data.get("minecraft:custom_data")
+                        .and_then(|cd| {
+                            cd.get("nbt")
+                                .and_then(|n| n.get("ExtraAttributes"))
+                                .and_then(|ea| ea.get("uuid"))
+                                .or_else(|| cd.get("ExtraAttributes").and_then(|ea| ea.get("uuid")))
+                        });
+                    // Avoid AH items by skipping items with a UUID (most AH items: armor, weapons, pets have UUIDs)
+                    if raw_uuid.is_some() {
+                        continue;
+                    }
+                }
+
+                // Prefer the unformatted name, let BazaarSellOrder handle the identity search
+                *items_to_sell.entry(clean_name).or_insert(0) += item.count() as u64;
+            }
+
+            if let Some(queue) = state.command_queue.read().as_ref() {
+                for (item_name, amount) in items_to_sell {
+                    info!("[SellInventoryBz] Enqueuing cancel + sell offer for {} (x{})", item_name, amount);
+                    // Cancel any open sell offer for this item first so we can pool our inventory with the unsold amount
+                    queue.enqueue(
+                        crate::types::CommandType::ManageOrders {
+                            cancel_open: true,
+                            target_item: Some((item_name.clone(), false)), // false = sell order
+                        },
+                        crate::types::CommandPriority::High,
+                        false, 
+                    );
+
+                    queue.enqueue(
+                        crate::types::CommandType::BazaarSellOrder {
+                            item_name,
+                            item_tag: None,
+                            amount,
+                            price_per_unit: 1.0, // Fallback price, bot clicks 'Best Offer -0.1'
+                        },
+                        crate::types::CommandPriority::High,
+                        false, 
+                    );
+                }
+            }
+            
+            // We didn't open a window, so return to Idle immediately to process the new queue
+            *state.bot_state.write() = BotState::Idle;
         }
     }
 }
@@ -3918,13 +4008,36 @@ async fn handle_window_interaction(
             // to 1500ms matching the order-button poll above.  A single fixed sleep is unreliable
             // because ContainerSetContent may arrive at any time after OpenScreen.
             let poll_deadline2 = tokio::time::Instant::now() + tokio::time::Duration::from_millis(1500);
-            let (amount_slot, price_slot) = loop {
+            let (amount_slot, price_slot, is_top_order) = loop {
                 if *state.last_window_id.read() != window_id { return; }
                 let slots = read_slots();
                 let ca = if is_buy_order { find_slot_by_name(&slots, "Custom Amount") } else { None };
-                let cp = find_slot_by_name(&slots, "Custom Price");
+                let top_str = if is_buy_order { "Top Order +0.1" } else { "Best Offer -0.1" };
+                let cp_top = find_slot_by_name(&slots, top_str)
+                    .or_else(|| {
+                        // find any slot that contains "Top Order" and "+", rejecting "Same as Top Order"
+                        slots.iter().position(|item| {
+                            if let Some(name) = crate::bot::client::get_item_display_name_from_slot(item) {
+                                let clean = crate::utils::remove_minecraft_colors(&name).to_lowercase();
+                                if is_buy_order {
+                                    clean.contains("top order") && clean.contains("+")
+                                } else {
+                                    clean.contains("best offer") && clean.contains("-")
+                                }
+                            } else {
+                                false
+                            }
+                        })
+                    });
+                let cp_custom = find_slot_by_name(&slots, "Custom Price");
+                let (cp, is_to) = if let Some(i) = cp_top {
+                    (Some(i), true)
+                } else {
+                    (cp_custom, false)
+                };
+                
                 if ca.is_some() || cp.is_some() || tokio::time::Instant::now() >= poll_deadline2 {
-                    break (ca, cp);
+                    break (ca, cp, is_to);
                 }
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             };
@@ -3944,14 +4057,39 @@ async fn handle_window_interaction(
                 current_step == BazaarStep::SelectOrderType || current_step == BazaarStep::SetAmount)
             {
                 if *state.last_window_id.read() != window_id { return; }
-                info!("[Bazaar] Price screen: clicking Custom Price at slot {}", i);
+                if is_top_order {
+                    let top_str = if is_buy_order { "Top Order +0.1" } else { "Best Offer -0.1" };
+                    info!("[Bazaar] Price screen: clicking {} at slot {}", top_str, i);
+                } else {
+                    info!("[Bazaar] Price screen: clicking Custom Price at slot {}", i);
+                }
                 *state.bazaar_step.write() = BazaarStep::SetPrice;
                 click_window_slot(bot, &state.last_window_id, window_id, i as i16).await;
-                // Sign response is sent in the OpenSignEditor packet handler
+                // If it was Custom Price, sign response is sent in the OpenSignEditor packet handler.
+                // If it was Top Order +0.1, the server will skip the sign and go straight to confirm.
             }
             // Step 5: Confirm screen — anything that opens after SetPrice
             else if current_step == BazaarStep::SetPrice {
                 if *state.last_window_id.read() != window_id { return; }
+                
+                // Read exact price from slot 13 Confirm button lore (e.g., "Price per unit: 210,769 coins")
+                let slots = read_slots();
+                if let Some(item) = slots.get(13) {
+                    let lore = crate::bot::client::get_item_lore_from_slot(item);
+                    for line in lore {
+                        let clean_line = crate::utils::remove_minecraft_colors(&line);
+                        if clean_line.starts_with("Price per unit: ") {
+                            if let Some(end_idx) = clean_line.find(" coins") {
+                                let price_str = &clean_line["Price per unit: ".len()..end_idx].replace(",", "");
+                                if let Ok(price) = price_str.parse::<f64>() {
+                                    *state.bazaar_price_per_unit.write() = price;
+                                    info!("[Bazaar] Parsed precise confirm price: {}", price);
+                                }
+                            }
+                        }
+                    }
+                }
+                
                 info!("[Bazaar] Confirm screen: clicking slot 13");
                 *state.bazaar_step.write() = BazaarStep::Confirm;
                 // Clear rejection flag before clicking so we only capture the
@@ -4697,6 +4835,18 @@ async fn handle_window_interaction(
                 }
 
                 let total_orders = sell_orders.len() + buy_orders.len();
+                let total_matching_target = if let Some((ref tgt_name, tgt_is_buy)) = target_item {
+                    let tgt_norm = crate::bazaar_tracker::normalize_for_match_pub(tgt_name);
+                    sell_orders.iter().chain(buy_orders.iter()).filter(|(_, name, identity, _, _, _, _, _)| {
+                        let order_is_buy = identity.as_ref()
+                            .map(|(b, _)| *b)
+                            .unwrap_or_else(|| is_buy_bazaar_order_name(name));
+                        let clean_name = clean_order_item_name(name, identity);
+                        tgt_is_buy == order_is_buy && crate::bazaar_tracker::normalize_for_match_pub(&clean_name) == tgt_norm
+                    }).count()
+                } else {
+                    0
+                };
 
                 // Emit a reconciliation snapshot so the tracker can remove
                 // stale entries that no longer exist in-game.
@@ -4746,23 +4896,24 @@ async fn handle_window_interaction(
                         crate::bazaar_tracker::normalize_for_match_pub(&clean) == tgt_norm
                     }).cloned()
                 } else if !cancel_open {
-                    // Always try claimable sell orders first (yield coins, no
-                    // inventory space needed).
+                    // Always try claimable sell orders first (yield coins, no inventory space needed).
                     sell_orders.iter().find(|&(_, _, _, _, claimable, _, _, _)| *claimable).cloned()
-                        // Claimable buy orders — skip entirely when inventory is
-                        // full so we don't waste a ManageOrders cycle opening /bz,
-                        // navigating to the order, and then aborting.
+                        // Claimable buy orders — skip entirely when inventory is full
                         .or_else(|| {
                             if inv_full { None } else {
                                 buy_orders.iter().find(|&(_, _, _, _, claimable, _, _, _)| *claimable).cloned()
                             }
                         })
+                        // Next, look for stale orders that definitely need cancelling
                         .or_else(|| sell_orders.iter().find(|&(_, _, identity, _, claimable, _, _, _)| {
                             !claimable && should_cancel_open_order_due_to_age(identity.clone(), cancel_mins)
                         }).cloned())
                         .or_else(|| buy_orders.iter().find(|&(_, _, identity, _, claimable, _, _, _)| {
                             !claimable && should_cancel_open_order_due_to_age(identity.clone(), cancel_mins)
                         }).cloned())
+                        // FINALLY, pick ANY remaining open order to manually look inside and check for outbids
+                        .or_else(|| sell_orders.iter().find(|&(_, _, _, _, claimable, _, _, _)| !claimable).cloned())
+                        .or_else(|| buy_orders.iter().find(|&(_, _, _, _, claimable, _, _, _)| !claimable).cloned())
                 } else {
                     // cancel mode: sell first, then buy (original behaviour)
                     sell_orders.into_iter().next()
@@ -4894,11 +5045,11 @@ async fn handle_window_interaction(
                         // because that handler is still active.
                         if total_orders > 1 && !order_options_opened {
                             if let Some(queue) = state.command_queue.read().as_ref() {
-                                if !queue.has_manage_orders() && target_item.is_none() {
-                                    info!("[ManageOrders] {} more order(s) remain — re-queuing ManageOrders", total_orders - 1);
+                                if !queue.has_manage_orders() && (target_item.is_none() || total_matching_target > 1) {
+                                    info!("[ManageOrders] {} more order(s) remain — re-queuing ManageOrders", if target_item.is_some() { total_matching_target - 1 } else { total_orders - 1});
                                     queue.enqueue(
-                                        crate::types::CommandType::ManageOrders { cancel_open, target_item: None },
-                                        crate::types::CommandPriority::Normal,
+                                        crate::types::CommandType::ManageOrders { cancel_open, target_item: target_item.clone() },
+                                        crate::types::CommandPriority::High,
                                         false,
                                     );
                                 }
@@ -4927,12 +5078,15 @@ async fn handle_window_interaction(
                 } else {
                 // Protect recently-placed orders (< 5 min) from cancellation,
                 // even in cancel_open (startup) mode.
-                let too_young_to_cancel = is_order_below_min_cancel_age(&order_identity);
+                let is_targeted_cancel = state.manage_orders_target_item.read().is_some();
+                let too_young_to_cancel = !is_targeted_cancel && is_order_below_min_cancel_age(&order_identity);
                 if too_young_to_cancel {
                     info!(
                         "[ManageOrders] Order \"{}\" is less than {} seconds old — too young to cancel",
                         order_name, MIN_ORDER_AGE_BEFORE_CANCEL_SECS
                     );
+                } else if is_targeted_cancel {
+                    info!("[ManageOrders] Targeted cancel requested for \"{}\" — ignoring minimum age check", order_name);
                 }
 
                 // Determine cancel_due_to_age BEFORE deciding whether to skip.
@@ -5054,8 +5208,8 @@ async fn handle_window_interaction(
                             if !queue.has_manage_orders() {
                                 info!("[ManageOrders] Re-queuing ManageOrders after partial collect in Order options");
                                 queue.enqueue(
-                                    crate::types::CommandType::ManageOrders { cancel_open, target_item: None },
-                                    crate::types::CommandPriority::Normal,
+                                    crate::types::CommandType::ManageOrders { cancel_open, target_item: target_item.clone() },
+                                    crate::types::CommandPriority::High,
                                     false,
                                 );
                             }
@@ -5072,6 +5226,7 @@ async fn handle_window_interaction(
                     tokio::time::Instant::now() + tokio::time::Duration::from_secs(3);
                 let mut cancel_slot: Option<usize> = None;
                 let mut collect_slot: Option<usize> = None;
+                let mut outbid_detected = false;
                 loop {
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                     if *state.last_window_id.read() != window_id {
@@ -5085,6 +5240,19 @@ async fn handle_window_interaction(
                     cancel_slot = find_slot_by_name(&slots2, "Cancel")
                         .or_else(|| find_slot_by_lore_contains(&slots2, "click to cancel"))
                         .or_else(|| find_slot_by_lore_contains(&slots2, "cancel order"));
+
+                    // Manually look in Order options to check if outbidded
+                    for item in slots2.iter() {
+                        if item.is_empty() { continue; }
+                        let lore = get_item_lore_from_slot(item).join("\n").to_lowercase();
+                        // Hypixel lore might say "status: outbid", "outbid by", or not be the top order
+                        // If it indicates we are not top, we cancel to fight for top order
+                        if lore.contains("outbid") || lore.contains("not top order") || lore.contains("best offer: no") {
+                            outbid_detected = true;
+                            // if we find outbid indicator, we can break early if we also have cancel slot
+                        }
+                    }
+
                     if collect_slot.is_some() || cancel_slot.is_some() {
                         break;
                     }
@@ -5104,10 +5272,16 @@ async fn handle_window_interaction(
                     }
                 }
 
-                if cancel_due_to_age && cancel_slot.is_some() {
+                if outbid_detected {
+                    info!("[ManageOrders] Open order \"{}\" is outbidded according to lore! Cancelling to fight for top order", order_name);
+                }
+
+                let should_cancel_now = cancel_due_to_age || outbid_detected;
+
+                if should_cancel_now && cancel_slot.is_some() {
                     info!(
-                        "[ManageOrders] Open order \"{}\" exceeds cancel threshold ({}m/M) — will cancel (Order options)",
-                        order_name, state.bazaar_order_cancel_minutes_per_million
+                        "[ManageOrders] Open order \"{}\" will be cancelled (Order options)",
+                        order_name
                     );
                 }
 
@@ -5128,7 +5302,7 @@ async fn handle_window_interaction(
                         } else {
                             warn!("[ManageOrders] Collect click for \"{}\" was not confirmed in Order options", order_name);
                         }
-                        if (cancel_open || cancel_due_to_age) && !cancel_exceeded {
+                        if (cancel_open || should_cancel_now) && !cancel_exceeded {
                             if let Some(cancel_after) = find_slot_by_name(&bot.menu().slots(), "Cancel") {
                                 if *state.last_window_id.read() == window_id {
                                     info!("[ManageOrders] Clicking Cancel at slot {} after collecting in Order options", cancel_after);
@@ -5152,7 +5326,7 @@ async fn handle_window_interaction(
                         }
                     }
                 } else if let Some(cs) = cancel_slot {
-                    if (cancel_open || cancel_due_to_age) && !cancel_exceeded {
+                    if (cancel_open || should_cancel_now) && !cancel_exceeded {
                         if *state.last_window_id.read() == window_id {
                             info!("[ManageOrders] Clicking Cancel at slot {} in Order options", cs);
                             click_window_slot(bot, &state.last_window_id, window_id, cs as i16).await;
@@ -5171,8 +5345,8 @@ async fn handle_window_interaction(
                                 warn!("[ManageOrders] Cancel click for \"{}\" was not confirmed in Order options (attempt {})", order_name, prior_failures + 1);
                             }
                         }
-                    } else if !cancel_open && !cancel_due_to_age {
-                        debug!("[ManageOrders] Skipping open order \"{}\" in Order options (collect-only mode)", order_name);
+                    } else if !cancel_open && !should_cancel_now {
+                        debug!("[ManageOrders] Skipping open order \"{}\" in Order options (collect-only mode, not outbid or too old)", order_name);
                     }
                 } else {
                     warn!("[ManageOrders] No actionable button in Order options for \"{}\"", order_name);
@@ -5194,8 +5368,8 @@ async fn handle_window_interaction(
                     if !queue.has_manage_orders() {
                         info!("[ManageOrders] Re-queuing ManageOrders after Order options (cancel/collect)");
                         queue.enqueue(
-                            crate::types::CommandType::ManageOrders { cancel_open, target_item: None },
-                            crate::types::CommandPriority::Normal,
+                            crate::types::CommandType::ManageOrders { cancel_open, target_item: target_item.clone() },
+                            crate::types::CommandPriority::High,
                             false,
                         );
                     }
@@ -6248,6 +6422,7 @@ fn count_empty_player_slots(bot: &Client) -> usize {
 /// inventory slots (> half of 36 = 18 slots). Used to detect a dominant stackable item
 /// that should be instasold to free space when inventory is full.
 /// Returns None if no single item type dominates the inventory.
+#[allow(dead_code)]
 fn find_dominant_inventory_item(bot: &Client) -> Option<String> {
     let menu = bot.menu();
     let all_slots = menu.slots();

@@ -105,13 +105,15 @@ pub struct Config {
     
     #[serde(default = "default_true", alias = "bazaar_macro")]
     pub enable_bazaar_flips: bool,
+
+    #[serde(default = "default_bazaar_active_flips_count")]
+    pub bazaar_active_flips_count: u64,
     
     #[serde(default = "default_bazaar_purse_limit_millions")]
     pub bazaar_purse_limit_millions: u64,
 
-    /// **Deprecated**: COFL now handles flip type selection automatically.
-    /// This field is kept for backward compatibility but is always treated as true.
-    #[serde(default = "default_true", skip_serializing, alias = "ah_macro")]
+    /// Enables taking AH flips
+    #[serde(default = "default_true", alias = "ah_macro")]
     pub enable_ah_flips: bool,
     
     #[serde(default)]
@@ -257,6 +259,10 @@ fn default_bazaar_order_check_interval_seconds() -> u64 {
     60
 }
 
+fn default_bazaar_active_flips_count() -> u64 {
+    7
+}
+
 fn default_bazaar_purse_limit_millions() -> u64 {
     20
 }
@@ -317,6 +323,7 @@ impl Default for Config {
             bazaar_tax_rate: default_bazaar_tax_rate(),
             auction_listing_delay_ms: default_auction_listing_delay_ms(),
             enable_bazaar_flips: true,
+            bazaar_active_flips_count: default_bazaar_active_flips_count(),
             bazaar_purse_limit_millions: default_bazaar_purse_limit_millions(),
             enable_ah_flips: true,
             bed_spam: false,

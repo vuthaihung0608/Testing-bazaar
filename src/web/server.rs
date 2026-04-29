@@ -590,6 +590,15 @@ async fn process_chat_input(input: &str, state: &WebSharedState) {
                 error!("[WebGUI] Failed to send command to websocket: {}", e);
             }
         }
+    } else if lowercase.starts_with("/ingame ") {
+        let msg = input[8..].to_string();
+        state.command_queue.enqueue(
+            CommandType::SendChat {
+                message: msg,
+            },
+            CommandPriority::Critical,
+            false,
+        );
     } else if input.starts_with('/') {
         state.command_queue.enqueue(
             CommandType::SendChat {

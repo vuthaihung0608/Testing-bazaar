@@ -518,8 +518,8 @@ async fn main() -> Result<()> {
     // COFL now handles AH/Bazaar flip selection automatically based on user
     // settings — these flags are always true for backward compatibility with
     // internal code paths that check them.
-    let enable_ah_flips = Arc::new(AtomicBool::new(true));
-    let enable_bazaar_flips = Arc::new(AtomicBool::new(true));
+    let enable_ah_flips = Arc::new(AtomicBool::new(config.enable_ah_flips));
+    let enable_bazaar_flips = Arc::new(AtomicBool::new(config.enable_bazaar_flips));
     // Transient pause flag flipped by the web panel's Disconnect button.
     // When true the COFL WS event loop below drops incoming flips instead
     // of queueing them.  Cleared by the Connect button (or process restart).
@@ -780,9 +780,8 @@ async fn main() -> Result<()> {
     }
 
     // BZ automatic allocation state
-    let bz_top_items = Arc::new(tokio::sync::Mutex::new(Vec::<(String, f64)>::new()));
-    let bz_active_targets = Arc::new(std::sync::RwLock::new(Vec::<(String, u64)>::new())); // (item_name, q_i)
-    let bz_api_prices = Arc::new(std::sync::RwLock::new(std::collections::HashMap::<String, (f64, f64)>::new())); // item_id -> (buyPrice, sellPrice)
+    let bz_top_items = Arc::new(tokio::sync::Mutex::new(Vec::<(String, f64, f64)>::new()));
+    let bz_blacklisted_items = Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::<String>::new()));
 
     // Spawn bot event handler
     let bot_client_clone = bot_client.clone();
@@ -799,8 +798,7 @@ async fn main() -> Result<()> {
     let profit_tracker_events = profit_tracker.clone();
     let bazaar_tracker_events = bazaar_tracker.clone();
     let bz_top_items_events = bz_top_items.clone();
-    let bz_active_targets_events = bz_active_targets.clone();
-    let bz_api_prices_events = bz_api_prices.clone();
+    let bz_blacklisted_items_events = bz_blacklisted_items.clone();
     // Tracks when the last AH auction was listed; the idle-inventory timer uses
     // this to detect 30-minute stalls and force `/cofl sellinventory`.
     let last_auction_listed_at: Arc<Mutex<Instant>> = Arc::new(Mutex::new(Instant::now()));
@@ -822,12 +820,45 @@ async fn main() -> Result<()> {
                     // Broadcast to web panel clients
                     let _ = chat_tx_events.send(msg.clone());
 
+                    let clean = frikadellen_baf::utils::remove_minecraft_colors(&msg);
+
                     // Parse Coflnet profit response:
                     // "According to our data <ign> made <amount> in the last <days> days across <N> auctions"
-                    let clean = frikadellen_baf::utils::remove_minecraft_colors(&msg);
                     if let Some(profit) = parse_cofl_profit_response(&clean) {
                         profit_tracker_events.set_ah_total(profit);
                         tracing::info!("[CoflProfit] Updated AH total from Coflnet: {} coins", profit);
+                    }
+
+                    // Handle requirement rejection from Hypixel ("You must have Catacombs Skill 20!", "Requires Combat Skill 16", etc)
+                    if clean.contains("You must have ") || clean.contains("Requires ") || clean.contains("You don't have the required") {
+                        if bot_client_clone.state() == frikadellen_baf::types::BotState::Bazaar {
+                            tracing::warn!("[Bazaar] Rejected item due to requirements: {}", clean);
+                            
+                            // Use the currently tracked bazaar item name instead of guessing from window title
+                            if let Some(item_name) = bot_client_clone.get_bazaar_item_name() {
+                                tracing::warn!("[Bazaar] Blacklisting item from flip tracker (failed requirements): {}", item_name);
+                                tokio::spawn({
+                                    let items_arc = bz_top_items_events.clone();
+                                    let blacklist_arc = bz_blacklisted_items_events.clone();
+                                    let name = item_name.clone();
+                                    async move {
+                                        blacklist_arc.lock().await.insert(name.clone().to_lowercase());
+                                        let mut items = items_arc.lock().await;
+                                        let initial_len = items.len();
+                                        items.retain(|(n, _, _)| !n.eq_ignore_ascii_case(&name));
+                                        if items.len() < initial_len {
+                                            tracing::info!("[Bazaar] Removed {} from top flips memory due to requirement failure", name);
+                                        }
+                                    }
+                                });
+                            } else {
+                                tracing::warn!("[Bazaar] Could not determine which item failed requirements! Current target item is None.");
+                            }
+
+                            bot_client_clone.set_state(frikadellen_baf::types::BotState::Idle);
+                            // Also close window manually as we might be stuck on it
+                            bot_client_clone.close_current_window();
+                        }
                     }
 
                     // Parse `/cofl bz h` response for authoritative BZ session profit.
@@ -837,36 +868,8 @@ async fn main() -> Result<()> {
                         tracing::info!("[CoflBzH] Updated BZ total from /cofl bz h: {} coins", bz_profit);
                     }
 
-                    // Parse `/cofl bz` recommendations
-                    let trimmed_clean = clean.trim_start();
-                    if trimmed_clean.starts_with(">") && trimmed_clean.contains(": est ") && trimmed_clean.contains("per hour") {
-                        if !clean.contains("[!]") && !msg.contains("§m") {
-                            if let Some(colon_idx) = trimmed_clean.find(':') {
-                                let item_name = trimmed_clean[1..colon_idx].trim().to_string();
-                                
-                                // parse "est 25.8M per hour"
-                                let est_part = &trimmed_clean[colon_idx+1..];
-                                let mut v_i = 0.0;
-                                if let Some(est_start) = est_part.find("est ") {
-                                    if let Some(est_end) = est_part.find(" per hour") {
-                                        let num_str = est_part[est_start+4..est_end].trim();
-                                        if let Some(m_idx) = num_str.find('M') {
-                                            v_i = num_str[..m_idx].parse::<f64>().unwrap_or(0.0) * 1_000_000.0;
-                                        } else if let Some(k_idx) = num_str.find('K') {
-                                            v_i = num_str[..k_idx].parse::<f64>().unwrap_or(0.0) * 1_000.0;
-                                        } else {
-                                            v_i = num_str.parse::<f64>().unwrap_or(0.0);
-                                        }
-                                    }
-                                }
-                                
-                                if let Ok(mut top_items) = bz_top_items_events.try_lock() {
-                                    top_items.push((item_name.clone(), v_i));
-                                    tracing::info!("[BazaarTop5] Parsed recommendation: {} ({} coins/hr)", item_name, v_i);
-                                }
-                            }
-                        }
-                    }
+                    // (Removed /cofl bz chat parsing)
+
 
                     // Detect bazaar daily sell value limit
                     if clean.contains("You reached the daily limit") && clean.contains("bazaar") {
@@ -1371,23 +1374,18 @@ async fn main() -> Result<()> {
                                 item_name, actual_amount, order.price_per_unit);
 
                             // Auto-sell collected items
-                            let bz_api = bz_api_prices_events.read().unwrap();
-                            let product_id = item_name.to_uppercase().replace(" ", "_");
-                            if let Some(&(api_buy, _)) = bz_api.get(&product_id).or_else(|| bz_api.get(&product_id.replace("ENCHANTED_", "ENCHANTED_ITEM_"))) {
-                                let sell_price = api_buy - 0.1;
-                                if sell_price > 0.0 && actual_amount > 0 {
-                                    command_queue_clone.enqueue(
-                                        frikadellen_baf::types::CommandType::BazaarSellOrder {
-                                            item_name: item_name.clone(),
-                                            item_tag: None,
-                                            amount: actual_amount,
-                                            price_per_unit: sell_price,
-                                        },
-                                        frikadellen_baf::types::CommandPriority::High,
-                                        true
-                                    );
-                                    tracing::info!("[BazaarAuto] Auto-selling collected buy order items: {} x{} @ {:.1}", item_name, actual_amount, sell_price);
-                                }
+                            if actual_amount > 0 {
+                                command_queue_clone.enqueue(
+                                    frikadellen_baf::types::CommandType::BazaarSellOrder {
+                                        item_name: item_name.clone(),
+                                        item_tag: None,
+                                        amount: actual_amount,
+                                        price_per_unit: 1.0, // Fallback price, bot clicks 'Best Offer -0.1' slot
+                                    },
+                                    frikadellen_baf::types::CommandPriority::High,
+                                    true
+                                );
+                                tracing::info!("[BazaarAuto] Auto-selling collected buy order items: {} x{}", item_name, actual_amount);
                             }
                         }
                     } else {
@@ -1549,22 +1547,42 @@ async fn main() -> Result<()> {
                     let detail_str = if let Some(ref order) = order_data {
                         if !is_buy_order {
                             // We cancelled a SELL order and got the items back. We should re-sell them!
-                            let bz_api = bz_api_prices_events.read().unwrap();
-                            let product_id = item_name.to_uppercase().replace(" ", "_");
-                            if let Some(&(api_buy, _)) = bz_api.get(&product_id).or_else(|| bz_api.get(&product_id.replace("ENCHANTED_", "ENCHANTED_ITEM_"))) {
-                                let sell_price = api_buy - 0.1;
-                                if sell_price > 0.0 && order.amount > 0 {
+                            if order.amount > 0 {
+                                let pending = command_queue_clone.get_bazaar_sell_orders_in_queue();
+                                if pending.iter().any(|n| n.eq_ignore_ascii_case(&item_name)) {
+                                    tracing::info!("[BazaarAuto] Skipping auto-resell for {} because a SellOrder is already queued (assumed combined)", item_name);
+                                } else {
                                     command_queue_clone.enqueue(
                                         frikadellen_baf::types::CommandType::BazaarSellOrder {
                                             item_name: item_name.clone(),
                                             item_tag: None,
                                             amount: order.amount,
-                                            price_per_unit: sell_price,
+                                            price_per_unit: order.price_per_unit, // Fallback price, bot clicks 'Best Offer -0.1' slot
                                         },
                                         frikadellen_baf::types::CommandPriority::Normal,
                                         true
                                     );
-                                    tracing::info!("[BazaarAuto] Auto-reselling cancelled sell order items: {} x{} @ {:.1}", item_name, order.amount, sell_price);
+                                    tracing::info!("[BazaarAuto] Auto-reselling cancelled sell order items: {} x{}", item_name, order.amount);
+                                }
+                            }
+                        } else {
+                            // We cancelled a BUY order (likely outbid). We should re-buy the remaining amount!
+                            if order.amount > 0 {
+                                let pending = command_queue_clone.get_bazaar_buy_orders_in_queue();
+                                if pending.iter().any(|n| n.eq_ignore_ascii_case(&item_name)) {
+                                    tracing::info!("[BazaarAuto] Skipping auto-rebuy for {} because a BuyOrder is already queued (assumed combined)", item_name);
+                                } else {
+                                    command_queue_clone.enqueue(
+                                        frikadellen_baf::types::CommandType::BazaarBuyOrder {
+                                            item_name: item_name.clone(),
+                                            item_tag: None,
+                                            amount: order.amount, // re-buy what was left
+                                            price_per_unit: order.price_per_unit, // Fallback price, bot clicks 'Top Order +0.1' slot
+                                        },
+                                        frikadellen_baf::types::CommandPriority::Normal,
+                                        true
+                                    );
+                                    tracing::info!("[BazaarAuto] Auto-rebuying cancelled buy order items: {} x{}", item_name, order.amount);
                                 }
                             }
                         }
@@ -1693,6 +1711,7 @@ async fn main() -> Result<()> {
     let cofl_premium_ws = cofl_premium.clone();
     let enable_ah_flips_ws = enable_ah_flips.clone();
     let enable_bazaar_flips_ws = enable_bazaar_flips.clone();
+    let bz_blacklisted_items_ws = bz_blacklisted_items.clone();
     let flip_intake_paused_ws = flip_intake_paused.clone();
     let chat_tx_ws = chat_tx.clone();
     let detected_cofl_license_ws = detected_cofl_license.clone();
@@ -1712,6 +1731,10 @@ async fn main() -> Result<()> {
     let bz_list_items: Arc<std::sync::Mutex<std::collections::HashMap<String, (i64, u32)>>> =
         Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     
+    let deferred_manage_orders: Arc<std::sync::Mutex<Vec<frikadellen_baf::types::CommandType>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let deferred_manage_orders_proc = deferred_manage_orders.clone();
+    let deferred_manage_orders_resume = deferred_manage_orders.clone();
+
     tokio::spawn(async move {
         use frikadellen_baf::websocket::CoflEvent;
         use frikadellen_baf::types::{CommandType, CommandPriority};
@@ -1790,9 +1813,41 @@ async fn main() -> Result<()> {
                 CoflEvent::BazaarFlip(_) => {
                     // Ignored directly via websocket, processing from in-game chat instead as requested.
                 }
-
-                }
                 CoflEvent::ChatMessage(msg) => {
+                    let clean = frikadellen_baf::utils::remove_minecraft_colors(&msg);
+
+                    // Parse Coflnet undercut/outbid messages
+                    // Example: "[Coflnet]: Your sell-order for 160x Jacob's Ticket has been undercut by an order of 64x at 54,755.6 per unit (-0.1)."
+                    // Example: "[Coflnet]: Your buy-order for 123x Diamond has been outbid by an order of 1x at 123.4 per unit (+0.1)."
+                    if clean.contains("[Coflnet]: Your ") && (clean.contains(" has been undercut by ") || clean.contains(" has been outbid by ")) {
+                        let is_buy_order = clean.contains("buy-order");
+                        if let Some(for_idx) = clean.find(" for ") {
+                            if let Some(has_idx) = clean.find(" has been ") {
+                                let target_text = clean[for_idx + 5..has_idx].trim(); // e.g. "160x Jacob's Ticket"
+                                // Remove prefix like "160x "
+                                let item_name = if let Some(space_idx) = target_text.find("x ") {
+                                    target_text[space_idx + 2..].trim().to_string()
+                                } else {
+                                    target_text.to_string()
+                                };
+                                tracing::info!("[Coflnet] Order undercut/outbid detected for: {}", item_name);
+                                
+                                // Cancel the order so it can be re-created
+                                // ManageOrders with target_item will scan order pages and cancel
+                                // specifically this order if it hasn't filled.  When it cancels, it
+                                // triggers the regular "Bazaar Order Cancelled" which queues a rebuild.
+                                command_queue_clone.enqueue(
+                                    frikadellen_baf::types::CommandType::ManageOrders {
+                                        cancel_open: true,
+                                        target_item: Some((item_name, is_buy_order)),
+                                    },
+                                    frikadellen_baf::types::CommandPriority::High,
+                                    false,
+                                );
+                            }
+                        }
+                    }
+
                     // Parse "Your connection id is XXXX" (from chatMessage, matches TypeScript BAF.ts)
                     if let Some(cap) = msg.find("Your connection id is ") {
                         let rest = &msg[cap + "Your connection id is ".len()..];
@@ -1973,77 +2028,152 @@ async fn main() -> Result<()> {
                                 } else if effective_is_buy && bazaar_tracker_ws.has_filled_orders() {
                                     debug!("Skipping BUY bazaar flip from chat — filled orders pending: {}", rec.item_name);
                                 } else {
-
-                                // Cap BUY amounts for unstackable items (e.g. Enchanted Books)
-                                let order_amount = if effective_is_buy
-                                    && frikadellen_baf::utils::is_unstackable_item(
-                                        &rec.item_name,
-                                        rec.item_tag.as_deref(),
-                                    )
-                                {
-                                    let empty = bot_client_for_ws.empty_slot_count() as u64;
-                                    let max_buy = empty.saturating_sub(2);
-                                    if max_buy == 0 {
-                                        debug!("Skipping unstackable BUY from chat — not enough space ({} empty): {}", empty, rec.item_name);
-                                        continue;
+                                    let mut skip = false;
+                                    
+                                    // Also check blacklist (failed requirements)
+                                    if bz_blacklisted_items_ws.lock().await.contains(&rec.item_name.to_lowercase()) {
+                                        debug!("Skipping BUY bazaar flip from chat — item blacklisted (failed requirements): {}", rec.item_name);
+                                        skip = true;
                                     }
-                                    let capped = rec.amount.min(max_buy);
-                                    if capped < rec.amount {
-                                        info!(
-                                            "[BazaarFlips] Capping unstackable BUY amount {} → {} (chat): {}",
-                                            rec.amount, capped, rec.item_name
-                                        );
-                                    }
-                                    capped
-                                } else {
-                                    rec.amount
-                                };
 
-                                let (order_color, order_label) = if effective_is_buy { ("§a", "BUY") } else { ("§c", "SELL") };
-                                let baf_msg = format!(
-                                    "§f[§4BAF§f]: §6[BZ] {}{}§7 order: §r{}§r §7x{} @ §6{}§7 coins/unit",
-                                    order_color, order_label,
-                                    rec.item_name,
-                                    order_amount,
-                                    format_coins_f64(rec.price_per_unit)
-                                );
-                                print_mc_chat(&baf_msg);
-                                let _ = chat_tx_ws.send(baf_msg);
-
-                                let priority = if effective_is_buy {
-                                    CommandPriority::Normal
-                                } else {
-                                    CommandPriority::Critical
-                                };
-                                let command_type = if effective_is_buy {
-                                    CommandType::BazaarBuyOrder {
-                                        item_name: rec.item_name.clone(),
-                                        item_tag: rec.item_tag.clone(),
-                                        amount: order_amount,
-                                        price_per_unit: rec.price_per_unit,
+                                    let mut existing_buy_amount = 0;
+                                    let mut existing_sell_amount = 0;
+                                    if !skip {
+                                        if effective_is_buy {
+                                            let is_pending = command_queue_clone.get_bazaar_buy_orders_in_queue().iter().any(|n| n.eq_ignore_ascii_case(&rec.item_name));
+                                            if is_pending {
+                                                debug!("Skipping BUY bazaar flip from chat — already pending in queue: {}", rec.item_name);
+                                                skip = true;
+                                            } else {
+                                                // Check if there is an active order to consolidate
+                                                existing_buy_amount = bazaar_tracker_ws.get_orders().iter()
+                                                    .filter(|o| o.item_name.eq_ignore_ascii_case(&rec.item_name) && o.is_buy_order && o.status != "filled")
+                                                    .map(|o| o.amount)
+                                                    .sum();
+                                            }
+                                        } else {
+                                            let is_pending = command_queue_clone.get_bazaar_sell_orders_in_queue().iter().any(|n| n.eq_ignore_ascii_case(&rec.item_name));
+                                            if is_pending {
+                                                debug!("Skipping SELL bazaar flip from chat — already pending in queue: {}", rec.item_name);
+                                                skip = true;
+                                            } else {
+                                                // Check if there is an active order to consolidate
+                                                existing_sell_amount = bazaar_tracker_ws.get_orders().iter()
+                                                    .filter(|o| o.item_name.eq_ignore_ascii_case(&rec.item_name) && !o.is_buy_order && o.status != "filled")
+                                                    .map(|o| o.amount)
+                                                    .sum();
+                                            }
+                                        }
                                     }
-                                } else {
-                                    CommandType::BazaarSellOrder {
-                                        item_name: rec.item_name.clone(),
-                                        item_tag: rec.item_tag.clone(),
-                                        amount: order_amount,
-                                        price_per_unit: rec.price_per_unit,
-                                    }
-                                };
-                                command_queue_clone.enqueue(command_type, priority, true);
-                                info!("[BazaarFlips] Queued {} order from chat message: {} x{} @ {:.0}",
-                                    order_label, rec.item_name, rec.amount, rec.price_per_unit);
 
-                                // When at the bazaar order limit and we just queued a SELL
-                                // order, pre-queue a ManageOrders run to free a slot.
-                                if bot_client_for_ws.is_bazaar_at_limit() && !effective_is_buy && !command_queue_clone.has_manage_orders() {
-                                    info!("[BazaarFlips] At order limit with SELL queued (chat) — pre-queuing ManageOrders to free a slot");
-                                    command_queue_clone.enqueue(
-                                        CommandType::ManageOrders { cancel_open: false, target_item: None },
-                                        CommandPriority::High,
-                                        false,
-                                    );
-                                }
+                                    if !skip {
+                                        // Cap BUY amounts for unstackable items (e.g. Enchanted Books)
+                                        let mut order_amount = if effective_is_buy
+                                            && frikadellen_baf::utils::is_unstackable_item(
+                                                &rec.item_name,
+                                                rec.item_tag.as_deref(),
+                                            )
+                                        {
+                                            let empty = bot_client_for_ws.empty_slot_count() as u64;
+                                            let max_buy = empty.saturating_sub(2);
+                                            if max_buy == 0 {
+                                                debug!("Skipping unstackable BUY from chat — not enough space ({} empty): {}", empty, rec.item_name);
+                                                skip = true;
+                                                0
+                                            } else {
+                                                let capped = rec.amount.min(max_buy);
+                                                if capped < rec.amount {
+                                                    info!(
+                                                        "[BazaarFlips] Capping unstackable BUY amount {} → {} (chat): {}",
+                                                        rec.amount, capped, rec.item_name
+                                                    );
+                                                }
+                                                capped
+                                            }
+                                        } else {
+                                            rec.amount
+                                        };
+
+                                        if !skip {
+                                            if effective_is_buy && existing_buy_amount > 0 {
+                                                tracing::info!("[BazaarFlips] Consolidating existing buy order (+{}) with new order (+{}) for {}", existing_buy_amount, order_amount, rec.item_name);
+                                                order_amount += existing_buy_amount;
+                                            } else if !effective_is_buy && existing_sell_amount > 0 {
+                                                tracing::info!("[BazaarFlips] Consolidating existing sell order (+{}) with new order (+{}) for {}", existing_sell_amount, order_amount, rec.item_name);
+                                                order_amount += existing_sell_amount;
+                                            }
+
+                                            let (order_color, order_label) = if effective_is_buy { ("§a", "BUY") } else { ("§c", "SELL") };
+                                            let baf_msg = format!(
+                                                "§f[§4BAF§f]: §6[BZ] {}{}§7 order: §r{}§r §7x{} @ §6{}§7 coins/unit",
+                                                order_color, order_label,
+                                                rec.item_name,
+                                                order_amount,
+                                                format_coins_f64(rec.price_per_unit)
+                                            );
+                                            print_mc_chat(&baf_msg);
+                                            let _ = chat_tx_ws.send(baf_msg);
+
+                                            let priority = if effective_is_buy {
+                                                CommandPriority::Normal
+                                            } else {
+                                                CommandPriority::Critical
+                                            };
+                                            
+                                            // Ensure existing open orders are cancelled before creating the new consolidated one.
+                                            // Handle both BUY and SELL sides here.
+                                            if effective_is_buy && existing_buy_amount > 0 {
+                                                command_queue_clone.enqueue(
+                                                    CommandType::ManageOrders {
+                                                        cancel_open: true,
+                                                        target_item: Some((rec.item_name.clone(), true)), // true = buy order
+                                                    },
+                                                    priority,
+                                                    true
+                                                );
+                                            } else if !effective_is_buy && existing_sell_amount > 0 {
+                                                 command_queue_clone.enqueue(
+                                                    CommandType::ManageOrders {
+                                                        cancel_open: true,
+                                                        target_item: Some((rec.item_name.clone(), false)), // false = sell order
+                                                    },
+                                                    priority,
+                                                    true
+                                                );
+                                            }
+
+                                            let command_type = if effective_is_buy {
+                                                CommandType::BazaarBuyOrder {
+                                                    item_name: rec.item_name.clone(),
+                                                    item_tag: rec.item_tag.clone(),
+                                                    amount: order_amount,
+                                                    price_per_unit: rec.price_per_unit,
+                                                }
+                                            } else {
+                                                CommandType::BazaarSellOrder {
+                                                    item_name: rec.item_name.clone(),
+                                                    item_tag: rec.item_tag.clone(),
+                                                    amount: order_amount,
+                                                    price_per_unit: rec.price_per_unit,
+                                                }
+                                            };
+
+                                            command_queue_clone.enqueue(command_type, priority, true);
+                                            info!("[BazaarFlips] Queued {} order from chat message: {} x{} @ {:.0}",
+                                                order_label, rec.item_name, rec.amount, rec.price_per_unit);
+
+                                            // When at the bazaar order limit and we just queued a SELL
+                                            // order, pre-queue a ManageOrders run to free a slot.
+                                            if bot_client_for_ws.is_bazaar_at_limit() && !effective_is_buy && !command_queue_clone.has_manage_orders() {
+                                                info!("[BazaarFlips] At order limit with SELL queued (chat) — pre-queuing ManageOrders to free a slot");
+                                                command_queue_clone.enqueue(
+                                                    CommandType::ManageOrders { cancel_open: false, target_item: None },
+                                                    CommandPriority::High,
+                                                    true
+                                                );
+                                            }
+                                        }
+                                    }
                                 } // end gate checks
                             }
                         }
@@ -2343,10 +2473,10 @@ async fn main() -> Result<()> {
                         let flag = bazaar_flips_paused_ws.clone();
                         flag.store(true, Ordering::Relaxed);
 
-                        // Close any open window so the bot is free for AH flips.
-                        // Also force state to Idle if it's in an interruptible state
-                        // so the AH flip can be processed immediately.
+                        // Close the bazaar window when AH flips are enabled to process them immediately.
                         bot_client_for_ws.close_current_window();
+                        
+                        // Force state to Idle so the AH flip can be processed immediately instead of dropped.
                         let current_state = bot_client_for_ws.state();
                         if current_state != frikadellen_baf::types::BotState::Purchasing
                             && current_state != frikadellen_baf::types::BotState::Startup
@@ -2356,6 +2486,7 @@ async fn main() -> Result<()> {
 
                         let chat_tx_resume = chat_tx_ws.clone();
                         let command_queue_resume = command_queue_clone.clone();
+                        let deferred_manage_orders_inner = deferred_manage_orders_resume.clone();
                         tokio::spawn(async move {
                             sleep(Duration::from_secs(20)).await;
                             flag.store(false, Ordering::Relaxed);
@@ -2364,7 +2495,19 @@ async fn main() -> Result<()> {
                             print_mc_chat(&baf_msg);
                             let _ = chat_tx_resume.send(baf_msg);
                             info!("[BazaarFlips] Bazaar flips resumed after AH flip window");
-                            // Queue a ManageOrders run to handle any deferred order
+                            
+                            // Re-queue explicitly deferred ManageOrders (like undercut/outbid cancellations)
+                            if let Ok(mut g) = deferred_manage_orders_inner.lock() {
+                                for cmd in g.drain(..) {
+                                    command_queue_resume.enqueue(
+                                        cmd,
+                                        CommandPriority::High,
+                                        false,
+                                    );
+                                }
+                            }
+
+                            // Queue a generic ManageOrders run to handle any other deferred order
                             // management (filled orders that need collecting, etc.).
                             if !command_queue_resume.has_manage_orders() {
                                 info!("[BazaarFlips] Queuing deferred ManageOrders after AH flip window");
@@ -2490,6 +2633,9 @@ async fn main() -> Result<()> {
                     bazaar_flips_paused_proc.load(Ordering::Relaxed),
                 ) {
                     if matches!(cmd.command_type, frikadellen_baf::types::CommandType::ManageOrders { .. }) {
+                        if let Ok(mut g) = deferred_manage_orders_proc.lock() {
+                            g.push(cmd.command_type.clone());
+                        }
                         info!("[Queue] Deferring ManageOrders — AH flip window active, will re-queue on resume");
                         let baf_msg = "§f[§4BAF§f]: §e⏸ Order management deferred — AH flips incoming, will resume after".to_string();
                         print_mc_chat(&baf_msg);
@@ -2536,27 +2682,12 @@ async fn main() -> Result<()> {
                         // Debounce to avoid spamming COFL — 60s between requests.
                         if last_sellinventory_request.elapsed() > Duration::from_secs(60) {
                             last_sellinventory_request = Instant::now();
-                            let ws = ws_client_proc.clone();
-                            let inv_client = bot_client_proc_inv.clone();
-                            tokio::spawn(async move {
-                                // Upload inventory first
-                                if let Some(inv_json) = inv_client.get_cached_inventory_json() {
-                                    let upload_msg = serde_json::json!({
-                                        "type": "uploadInventory",
-                                        "data": inv_json
-                                    }).to_string();
-                                    let _ = ws.send_message(&upload_msg).await;
-                                }
-                                let msg = serde_json::json!({
-                                    "type": "sellinventory",
-                                    "data": serde_json::to_string("").unwrap_or_default()
-                                }).to_string();
-                                if let Err(e) = ws.send_message(&msg).await {
-                                    tracing::warn!("[SellingMode] Failed to request sellinventory: {}", e);
-                                } else {
-                                    tracing::info!("[SellingMode] Auto-requested sellinventory (inventory full)");
-                                }
-                            });
+                            info!("[Queue] Triggering SellInventoryBz to create sell offers for all items (inventory full)");
+                            command_queue_processor.enqueue(
+                                frikadellen_baf::types::CommandType::SellInventoryBz,
+                                frikadellen_baf::types::CommandPriority::High,
+                                true
+                            );
                         }
                         command_queue_processor.complete_current();
                         // When inventory is full, also ensure ManageOrders is queued
@@ -2825,6 +2956,33 @@ async fn main() -> Result<()> {
                     }
                 }
             } 
+            // Handle /ingame command
+            else if lowercase_input.starts_with("/ingame ") {
+                let msg = input[8..].to_string();
+                command_queue_for_console.enqueue(
+                    frikadellen_baf::types::CommandType::SendChat { 
+                        message: msg.clone() 
+                    },
+                    frikadellen_baf::types::CommandPriority::High,
+                    false,
+                );
+                info!("Queued Minecraft Ingame Message: {}", msg);
+            }
+            // Handle Coflnet commands
+            else if lowercase_input.starts_with("/cofl ") {
+                let args = input[6..].trim();
+                let message = serde_json::json!({
+                    "type": "chat",
+                    "data": format!("\"{}\"", args)
+                }).to_string();
+                
+                let ws_client_clone = ws_client_for_console.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = ws_client_clone.send_message(&message).await {
+                        error!("[Console] Failed to send cofl command to websocket: {}", e);
+                    }
+                });
+            }
             // Handle other slash commands - send to Minecraft
             else if input.starts_with('/') {
                 command_queue_for_console.enqueue(
@@ -2860,65 +3018,84 @@ async fn main() -> Result<()> {
         }
     });
     
-    // Fetch top 5 bazaar flips via in-game command periodically (every 12 hours) and handle allocations
+    // Fetch top 15 bazaar flips via in-game command periodically (every 12 hours) and handle allocations
     if config.enable_bazaar_flips {
         let command_queue_bz = command_queue.clone();
         let bazaar_flips_paused_bz = bazaar_flips_paused.clone();
         let bz_top_items_calc = bz_top_items.clone();
-        let bz_active_targets_calc = bz_active_targets.clone();
-        let bz_api_prices_calc = bz_api_prices.clone();
+        let bz_blacklisted_items_calc = bz_blacklisted_items.clone();
         let bazaar_tracker_calc = bazaar_tracker.clone();
-        let bazaar_purse_limit_millions = config.bazaar_purse_limit_millions;
-        let bazaar_tax_rate = config.bazaar_tax_rate;
+        let bot_client_bz = bot_client.clone();
+        let config_loader_bz = config_loader.clone();
 
         tokio::spawn(async move {
             use frikadellen_baf::types::{CommandType, CommandPriority};
             
             // Loop for requesting new BZ top items every 12 hours
-            let cmd_q = command_queue_bz.clone();
             let bz_paused = bazaar_flips_paused_bz.clone();
             let top_items_clear = bz_top_items_calc.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(tokio::time::Duration::from_secs(30)).await; // initial delay
                 loop {
                     if !bz_paused.load(std::sync::atomic::Ordering::Relaxed) {
-                        if let Ok(mut items) = top_items_clear.lock().await {
-                            items.clear();
+                        let client = reqwest::Client::builder()
+                            .user_agent("Mozilla/5.0")
+                            .build()
+                            .unwrap_or_else(|_| reqwest::Client::new());
+                            
+                        if let Ok(resp) = client.get("https://sky.coflnet.com/api/flip/bazaar/spread").send().await {
+                            if let Ok(json) = resp.json::<serde_json::Value>().await {
+                                if let Some(items) = json.as_array() {
+                                    let mut best_flips = Vec::new();
+                                    for item in items {
+                                        let is_manipulated = item.get("isManipulated").and_then(|v| v.as_bool()).unwrap_or(false);
+                                        if !is_manipulated {
+                                            if let Some(flip) = item.get("flip") {
+                                                let volume = flip.get("volume").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                                let profit_per_hour = flip.get("profitPerHour").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                                let sell_price = flip.get("sellPrice").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                                let item_name = item.get("itemName").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                                
+                                                if profit_per_hour > 0.0 && volume > 500.0 && !item_name.is_empty() {
+                                                    best_flips.push((item_name, profit_per_hour, sell_price));
+                                                }
+                                            }
+                                        }
+                                    }
+                                    
+                                    best_flips.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                                    
+                                    let mut new_top = Vec::new();
+                                    for (name, p_h, s_p) in best_flips.into_iter().take(15) {
+                                        new_top.push((name, p_h, s_p));
+                                    }
+                                    
+                                    if !new_top.is_empty() {
+                                        let mut items_lock = top_items_clear.lock().await;
+                                        items_lock.clear();
+                                        items_lock.extend(new_top);
+                                        info!("Updated top 15 bazaar flips from Coflnet spread API: {:?}", *items_lock);
+                                    }
+                                }
+                            }
                         }
-                        cmd_q.enqueue(
-                            CommandType::SendChat { message: "/cofl bz".to_string() },
-                            CommandPriority::Low,
-                            true
-                        );
                     }
                     tokio::time::sleep(tokio::time::Duration::from_secs(43200)).await; // 12 hours
                 }
             });
 
-            // Loop for fetching API, calculating allocation, and placing orders
+            // Loop for calculating allocation, and placing orders
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
-                
-                // 1. Fetch API
-                let client = reqwest::Client::new();
-                if let Ok(resp) = client.get("https://api.hypixel.net/v2/skyblock/bazaar").send().await {
-                    if let Ok(json) = resp.json::<serde_json::Value>().await {
-                        if let Some(products) = json.get("products").and_then(|p| p.as_object()) {
-                            let mut api_prices = bz_api_prices_calc.write().unwrap();
-                            for (product_id, data) in products {
-                                if let Some(quick_status) = data.get("quick_status") {
-                                    let buy_price = quick_status.get("buyPrice").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                                    let sell_price = quick_status.get("sellPrice").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                                    api_prices.insert(product_id.clone(), (buy_price, sell_price));
-                                }
-                            }
-                        }
-                    }
-                }
 
                 // 2. Check if we need to calculate new allocations
+                let bz_config = config_loader_bz.load().unwrap_or_default();
+                let limit = (bz_config.bazaar_purse_limit_millions * 1_000_000) as f64;
+                let max_orders = bz_config.bazaar_active_flips_count as usize;
+
                 let mut top_items_copy = Vec::new();
-                if let Ok(mut items) = bz_top_items_calc.lock().await {
+                {
+                    let items = bz_top_items_calc.lock().await;
                     if !items.is_empty() {
                         top_items_copy = items.clone();
                     }
@@ -2926,91 +3103,104 @@ async fn main() -> Result<()> {
 
                 let current_orders = bazaar_tracker_calc.get_orders();
                 let mut escrow_used = 0.0;
-                let mut active_buy_counts = std::collections::HashMap::new();
+                let mut active_buy_items = std::collections::HashSet::new();
                 for order in &current_orders {
                     if order.is_buy_order {
                         escrow_used += order.amount as f64 * order.price_per_unit;
-                        *active_buy_counts.entry(order.item_name.clone()).or_insert(0) += order.amount;
+                        active_buy_items.insert(order.item_name.clone());
                     }
+                }
+                // Also prevent duplicates by checking pending queued buy orders.
+                // We don't add their cost to escrow_used yet because they haven't been placed,
+                // but we prevent queuing another!
+                let pending_orders = command_queue_bz.get_bazaar_buy_orders_in_queue();
+                for item in pending_orders {
+                    active_buy_items.insert(item);
                 }
 
                 let mut purse = 0.0;
-                if let Some(p) = bot_client_clone.get_purse() {
+                if let Some(p) = bot_client_bz.get_purse() {
                     purse = p as f64;
                 }
                 
-                let limit = (bazaar_purse_limit_millions * 1_000_000) as f64;
-                let min_purse_needed = (limit - escrow_used).max(0.0);
-                let mut available_budget = (purse - min_purse_needed).max(0.0);
-                let portfolio_budget = escrow_used + available_budget;
+                let available_budget = purse.min(limit - escrow_used).max(0.0);
+                tracing::info!("[BazaarAuto] Budget calcs - purse: {}, limit: {}, escrow: {}, avail: {}", purse, limit, escrow_used, available_budget);
 
-                if !top_items_copy.is_empty() {
-                    let api_prices = bz_api_prices_calc.read().unwrap();
-                    let mut total_score = 0.0;
-                    let mut item_scores = Vec::new();
-
-                    for (item_name, v_i) in &top_items_copy {
-                        let product_id = item_name.to_uppercase().replace(" ", "_");
-                        if let Some(&(api_buy, api_sell)) = api_prices.get(&product_id).or_else(|| api_prices.get(&product_id.replace("ENCHANTED_", "ENCHANTED_ITEM_"))) {
-                            let c_i = api_sell;
-                            let tax_multiplier = 1.0 - (bazaar_tax_rate / 100.0);
-                            let p_i = (api_buy * tax_multiplier) - c_i;
-                            if c_i > 0.0 && p_i > 0.0 && *v_i > 0.0 {
-                                let score = p_i * v_i; // Score_i
-                                total_score += score;
-                                item_scores.push((item_name.clone(), c_i, score));
-                            }
-                        }
-                    }
-
-                    let mut new_targets = Vec::new();
-                    if total_score > 0.0 {
-                        for (item_name, c_i, score) in item_scores {
-                            let optimal_budget = portfolio_budget * (score / total_score);
-                            let q_i = (optimal_budget / c_i).floor() as u64;
-                            if q_i > 0 {
-                                new_targets.push((item_name, q_i));
-                            }
-                        }
-                    }
-
-                    if let Ok(mut targets) = bz_active_targets_calc.write() {
-                        *targets = new_targets;
-                    }
-                }
-
-                // 3. Place buy orders up to Q_i
-                if !bazaar_flips_paused_bz.load(std::sync::atomic::Ordering::Relaxed) {
-                    let targets = bz_active_targets_calc.read().unwrap().clone();
+                // 3. Place buy orders
+                if !bazaar_flips_paused_bz.load(std::sync::atomic::Ordering::Relaxed) && !top_items_copy.is_empty() {
+                    let mut items_to_buy = Vec::new();
                     
-                    let api_prices = bz_api_prices_calc.read().unwrap();
+                    let active_orders_count = active_buy_items.len();
+                    let remaining_orders_allowed = if active_orders_count < max_orders { max_orders - active_orders_count } else { 0 };
+                    
+                    tracing::info!("[BazaarAuto] Orders allowed: {}, Active count: {}", remaining_orders_allowed, active_orders_count);
 
-                    for (item_name, target_q) in targets {
-                        let current_q = *active_buy_counts.get(&item_name).unwrap_or(&0);
-                        if current_q < target_q && available_budget > 0.0 {
-                            let product_id = item_name.to_uppercase().replace(" ", "_");
-                            if let Some(&(_, api_sell)) = api_prices.get(&product_id) {
-                                let c_i = api_sell + 0.1; // top order + 0.1
-                                let max_amount_budget = (available_budget / c_i).floor() as u64;
-                                let amount_needed = target_q - current_q;
-                                let mut amount_to_buy = amount_needed.min(max_amount_budget);
-                                // cap 71680 (1024 stack limit roughly)
-                                amount_to_buy = amount_to_buy.min(71680);
-                                
-                                if amount_to_buy > 0 {
-                                    command_queue_bz.enqueue(
-                                        CommandType::BazaarBuyOrder {
-                                            item_name: item_name.clone(),
-                                            item_tag: None,
-                                            amount: amount_to_buy,
-                                            price_per_unit: c_i,
-                                        },
-                                        CommandPriority::Normal,
-                                        true
-                                    );
-                                    available_budget -= amount_to_buy as f64 * c_i;
-                                    tracing::info!("[BazaarAuto] Queued buy order: {} x{} @ {:.1}", item_name, amount_to_buy, c_i);
+                    if remaining_orders_allowed > 0 {
+                        for (item_name, _profit, api_sell) in &top_items_copy {
+                            if items_to_buy.len() >= remaining_orders_allowed {
+                                break;
+                            }
+                            
+                            // skip if we already have an active buy order for this item to avoid repetitive orders
+                            if active_buy_items.contains(item_name) {
+                                tracing::info!("[BazaarAuto] Skipping '{}' (already active)", item_name);
+                                continue;
+                            }
+                            
+                            // skip if the item is blacklisted (failed requirements previously)
+                            if bz_blacklisted_items_calc.lock().await.contains(&item_name.to_lowercase()) {
+                                tracing::info!("[BazaarAuto] Skipping '{}' (blacklisted due to requirement failure)", item_name);
+                                continue;
+                            }
+
+                            let c_i = api_sell + 0.1; // top order + 0.1
+                            if c_i > 0.0 {
+                                if c_i > available_budget {
+                                    tracing::info!("[BazaarAuto] Skipping '{}' (requires {:.1}, but total budget is {:.1})", item_name, c_i, available_budget);
+                                    continue;
                                 }
+                                tracing::info!("[BazaarAuto] Selected for buying: '{}' (top order sell price: {:.1})", item_name, c_i);
+                                items_to_buy.push((item_name.clone(), c_i));
+                            } else {
+                                tracing::info!("[BazaarAuto] Skipping '{}' (price 0.0)", item_name);
+                            }
+                        }
+                    }
+                    
+                    let count = items_to_buy.len();
+                    if count > 0 && available_budget > 0.0 {
+                        let mut budget_left = available_budget;
+                        
+                        for (i, (item_name, c_i)) in items_to_buy.into_iter().enumerate() {
+                            let items_left = count - i;
+                            let budget_per_item = budget_left / (items_left as f64);
+                            tracing::info!("[BazaarAuto] eval dynamically budget_per_item: {:.1} for counting {} items left", budget_per_item, items_left);
+                            
+                            let mut amount_to_buy = (budget_per_item / c_i).floor() as u64;
+                            if amount_to_buy == 0 && c_i <= budget_left {
+                                amount_to_buy = (budget_left / c_i).floor() as u64;
+                            }
+                            
+                            tracing::info!("[BazaarAuto] Pre-cap amount_to_buy for {}: {}", item_name, amount_to_buy);
+                            // cap 71680 (1024 stack limit roughly)
+                            amount_to_buy = amount_to_buy.min(71680);
+                            
+                            if amount_to_buy > 0 {
+                                command_queue_bz.enqueue(
+                                    CommandType::BazaarBuyOrder {
+                                        item_name: item_name.clone(),
+                                        item_tag: None,
+                                        amount: amount_to_buy,
+                                        price_per_unit: c_i,
+                                    },
+                                    CommandPriority::Normal,
+                                    true
+                                );
+                                let cost = amount_to_buy as f64 * c_i;
+                                budget_left -= cost;
+                                tracing::info!("[BazaarAuto] Queued buy order: {} x{} @ {:.1} (Cost: {:.1}, Budget Left: {:.1})", item_name, amount_to_buy, c_i, cost, budget_left);
+                            } else {
+                                tracing::info!("[BazaarAuto] Missed buy for {} due to insufficient dynamic budget left: {:.1}", item_name, budget_left);
                             }
                         }
                     }
