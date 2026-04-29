@@ -1,6 +1,5 @@
 use anyhow::Result;
 use dialoguer::{Input, Confirm};
-use rustyline;
 use frikadellen_baf::{
     config::ConfigLoader,
     logging::{init_logger, print_mc_chat},
@@ -13,7 +12,6 @@ use frikadellen_baf::{
 use tracing::{debug, error, info, warn};
 use tokio::time::{sleep, Duration};
 use tokio::sync::broadcast;
-use serde_json;
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 use std::collections::HashMap;
 use std::time::Instant;
@@ -339,8 +337,8 @@ fn load_session_times(path: &std::path::Path) -> HashMap<String, SessionTimeEntr
     // Fallback: old `{ign: u64}` format — treat all entries as expired.
     if let Ok(old) = serde_json::from_str::<HashMap<String, u64>>(&raw) {
         return old
-            .into_iter()
-            .map(|(k, _)| (k, SessionTimeEntry { secs: 0, saved_at: 0 }))
+            .into_keys()
+            .map(|k| (k, SessionTimeEntry { secs: 0, saved_at: 0 }))
             .collect();
     }
     HashMap::new()
@@ -830,12 +828,12 @@ async fn main() -> Result<()> {
                     }
 
                     // Handle requirement rejection from Hypixel ("You must have Catacombs Skill 20!", "Requires Combat Skill 16", etc)
-                    if clean.contains("You must have ") || clean.contains("Requires ") || clean.contains("You don't have the required") {
-                        if bot_client_clone.state() == frikadellen_baf::types::BotState::Bazaar {
-                            tracing::warn!("[Bazaar] Rejected item due to requirements: {}", clean);
-                            
-                            // Use the currently tracked bazaar item name instead of guessing from window title
-                            if let Some(item_name) = bot_client_clone.get_bazaar_item_name() {
+                    if (clean.contains("You must have ") || clean.contains("Requires ") || clean.contains("You don't have the required"))
+                        && bot_client_clone.state() == frikadellen_baf::types::BotState::Bazaar {
+                        tracing::warn!("[Bazaar] Rejected item due to requirements: {}", clean);
+                        
+                        // Use the currently tracked bazaar item name instead of guessing from window title
+                        if let Some(item_name) = bot_client_clone.get_bazaar_item_name() {
                                 tracing::warn!("[Bazaar] Blacklisting item from flip tracker (failed requirements): {}", item_name);
                                 tokio::spawn({
                                     let items_arc = bz_top_items_events.clone();
@@ -849,16 +847,15 @@ async fn main() -> Result<()> {
                                         if items.len() < initial_len {
                                             tracing::info!("[Bazaar] Removed {} from top flips memory due to requirement failure", name);
                                         }
-                                    }
-                                });
-                            } else {
-                                tracing::warn!("[Bazaar] Could not determine which item failed requirements! Current target item is None.");
-                            }
-
-                            bot_client_clone.set_state(frikadellen_baf::types::BotState::Idle);
-                            // Also close window manually as we might be stuck on it
-                            bot_client_clone.close_current_window();
+                                }
+                            });
+                        } else {
+                            tracing::warn!("[Bazaar] Could not determine which item failed requirements! Current target item is None.");
                         }
+
+                        bot_client_clone.set_state(frikadellen_baf::types::BotState::Idle);
+                        // Also close window manually as we might be stuck on it
+                        bot_client_clone.close_current_window();
                     }
 
                     // Parse `/cofl bz h` response for authoritative BZ session profit.
@@ -1118,7 +1115,7 @@ async fn main() -> Result<()> {
                     let _ = chat_tx_events.send(baf_msg);
                     // Send webhook: for legendary/divine flips, send the styled
                     // webhook (with ping + color) instead of the regular purchase one.
-                    let is_legendary_flip = opt_profit.map_or(false, |p| p >= frikadellen_baf::webhook::LEGENDARY_PROFIT_THRESHOLD as i64);
+                    let is_legendary_flip = opt_profit.is_some_and(|p| p >= frikadellen_baf::webhook::LEGENDARY_PROFIT_THRESHOLD as i64);
                     let opt_finder_for_flip = opt_finder.clone();
                     if is_legendary_flip {
                         if let Some(profit) = opt_profit {
@@ -2198,7 +2195,7 @@ async fn main() -> Result<()> {
                     let lowercase_cmd = cmd.trim().to_lowercase();
                     if lowercase_cmd.starts_with("/cofl") || lowercase_cmd.starts_with("/baf") {
                         // Parse /cofl command like the console handler does
-                        let parts: Vec<&str> = cmd.trim().split_whitespace().collect();
+                        let parts: Vec<&str> = cmd.split_whitespace().collect();
                         if parts.len() > 1 {
                             let command = parts[1].to_string(); // Clone to own the data
                             let args = parts[2..].join(" ");
@@ -2582,8 +2579,8 @@ async fn main() -> Result<()> {
     let command_delay_ms = config.command_delay_ms;
     let auction_listing_delay_ms = config.auction_listing_delay_ms;
     let chat_tx_proc = chat_tx.clone();
-    let ws_client_proc = ws_client.clone();
-    let bot_client_proc_inv = bot_client.clone();
+    let _ws_client_proc = ws_client.clone();
+    let _bot_client_proc_inv = bot_client.clone();
     tokio::spawn(async move {
         use frikadellen_baf::types::BotState;
         // Debounce: avoid requesting sellinventory too frequently when inventory is full
@@ -3131,7 +3128,7 @@ async fn main() -> Result<()> {
                     let mut items_to_buy = Vec::new();
                     
                     let active_orders_count = active_buy_items.len();
-                    let remaining_orders_allowed = if active_orders_count < max_orders { max_orders - active_orders_count } else { 0 };
+                    let remaining_orders_allowed = max_orders.saturating_sub(active_orders_count);
                     
                     tracing::info!("[BazaarAuto] Orders allowed: {}, Active count: {}", remaining_orders_allowed, active_orders_count);
 
