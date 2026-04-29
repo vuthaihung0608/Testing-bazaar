@@ -23,6 +23,12 @@ fn now_unix() -> u64 {
         .as_secs()
 }
 
+impl Default for ProfitTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ProfitTracker {
     pub fn new() -> Self {
         let now = now_unix();

@@ -6,6 +6,7 @@
 #![allow(clippy::unnecessary_map_or)]
 #![allow(clippy::unnecessary_sort_by)]
 #![allow(clippy::identity_op)]
+#![allow(clippy::manual_is_multiple_of)]
 
 use anyhow::{anyhow, Result};
 use azalea::prelude::*;
