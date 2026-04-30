@@ -6343,7 +6343,7 @@ fn last_logged_order_timestamp(is_buy: bool, item_name: &str) -> Option<i64> {
 /// Minimum age (seconds) an order must exist before it can be cancelled.
 /// Cancelling orders that have only existed for a minute or two is wasteful —
 /// give them at least 5 minutes to fill.
-const MIN_ORDER_AGE_BEFORE_CANCEL_SECS: u64 = 300; // 5 minutes
+const MIN_ORDER_AGE_BEFORE_CANCEL_SECS: u64 = 2; // 2 seconds
 
 fn should_cancel_open_order_due_to_age(order_identity: Option<(bool, String)>, cancel_minutes_per_million: u64) -> bool {
     if cancel_minutes_per_million == 0 {
