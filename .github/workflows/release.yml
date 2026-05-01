@@ -28,34 +28,34 @@ jobs:
           # Linux x86_64
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact_name: frikadellen_baf
-            asset_name: frikadellen_baf-linux-x86_64
-            loader_artifact_name: FrikadellenBAF-loader
-            loader_asset_name: FrikadellenBAF-loader-linux-x86_64
+            artifact_name: hungz_flipper
+            asset_name: hungz_flipper-linux-x86_64
+            loader_artifact_name: HungzFlipper-loader
+            loader_asset_name: HungzFlipper-loader-linux-x86_64
             
           # macOS x86_64 (Intel)
           - os: macos-latest
             target: x86_64-apple-darwin
-            artifact_name: frikadellen_baf
-            asset_name: frikadellen_baf-macos-x86_64
-            loader_artifact_name: FrikadellenBAF-loader
-            loader_asset_name: FrikadellenBAF-loader-macos-x86_64
+            artifact_name: hungz_flipper
+            asset_name: hungz_flipper-macos-x86_64
+            loader_artifact_name: HungzFlipper-loader
+            loader_asset_name: HungzFlipper-loader-macos-x86_64
             
           # macOS ARM64 (Apple Silicon)
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact_name: frikadellen_baf
-            asset_name: frikadellen_baf-macos-arm64
-            loader_artifact_name: FrikadellenBAF-loader
-            loader_asset_name: FrikadellenBAF-loader-macos-arm64
+            artifact_name: hungz_flipper
+            asset_name: hungz_flipper-macos-aarch64
+            loader_artifact_name: HungzFlipper-loader
+            loader_asset_name: HungzFlipper-loader-macos-aarch64
             
           # Windows x86_64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact_name: frikadellen_baf.exe
-            asset_name: frikadellen_baf-windows-x86_64.exe
-            loader_artifact_name: FrikadellenBAF-loader.exe
-            loader_asset_name: FrikadellenBAF-loader-windows-x86_64.exe
+            artifact_name: hungz_flipper.exe
+            asset_name: hungz_flipper-windows-x86_64.exe
+            loader_artifact_name: HungzFlipper-loader.exe
+            loader_asset_name: HungzFlipper-loader-windows-x86_64.exe
 
     steps:
       - name: Checkout code
@@ -154,42 +154,42 @@ jobs:
           tag_name: ${{ steps.version.outputs.version }}
           name: Release ${{ steps.version.outputs.version }}
           body: |
-            ## Frikadellen BAF Release ${{ steps.version.outputs.version }}
+            ## Hungz Flipper Release ${{ steps.version.outputs.version }}
             
             Automated build from commit ${{ github.sha }}
             
-            ### FrikadellenBAF-loader (Recommended)
+            ### HungzFlipper-loader (Recommended)
             The loader automatically checks for updates on startup and downloads the latest version.
             Just run the loader instead of the main binary.
             
-            - **Linux (x86_64)**: `FrikadellenBAF-loader-linux-x86_64`
-            - **macOS (Intel)**: `FrikadellenBAF-loader-macos-x86_64`
-            - **macOS (Apple Silicon)**: `FrikadellenBAF-loader-macos-arm64`
-            - **Windows (x86_64)**: `FrikadellenBAF-loader-windows-x86_64.exe`
+            - **Linux (x86_64)**: `HungzFlipper-loader-linux-x86_64`
+            - **macOS (Intel)**: `HungzFlipper-loader-macos-x86_64`
+            - **macOS (Apple Silicon)**: `HungzFlipper-loader-macos-aarch64`
+            - **Windows (x86_64)**: `HungzFlipper-loader-windows-x86_64.exe`
             
             ### Manual Downloads (main binary)
-            - **Linux (x86_64)**: `frikadellen_baf-linux-x86_64`
-            - **macOS (Intel)**: `frikadellen_baf-macos-x86_64`
-            - **macOS (Apple Silicon)**: `frikadellen_baf-macos-arm64`
-            - **Windows (x86_64)**: `frikadellen_baf-windows-x86_64.exe`
+            - **Linux (x86_64)**: `hungz_flipper-linux-x86_64`
+            - **macOS (Intel)**: `hungz_flipper-macos-x86_64`
+            - **macOS (Apple Silicon)**: `hungz_flipper-macos-aarch64`
+            - **Windows (x86_64)**: `hungz_flipper-windows-x86_64.exe`
             
             ### Installation
             
             **Linux/macOS (using loader):**
             ```bash
-            chmod +x FrikadellenBAF-loader-*
-            chmod +x frikadellen_baf-*
+            chmod +x HungzFlipper-loader-*
+            chmod +x hungz_flipper-macos-*
             # Place both files in the same directory, then run:
-            ./FrikadellenBAF-loader-*
+            ./HungzFlipper-loader-*
             ```
             
             **Windows (using loader):**
             ```
             # Place both .exe files in the same directory, then run:
-            FrikadellenBAF-loader-windows-x86_64.exe
+            HungzFlipper-loader-windows-x86_64.exe
             ```
             
-            See [README_RUST.md](https://github.com/TreXito/frikadellen-baf-121/blob/main/README_RUST.md) for usage instructions.
+            See [README.md](https://github.com/vuthaihung0608/hungz-flipper/blob/main/README.md) for usage instructions.
           files: |
             ./artifacts/**/*
           draft: false
