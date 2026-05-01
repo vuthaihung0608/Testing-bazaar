@@ -1,28 +1,31 @@
 use anyhow::Result;
-use dialoguer::{Input, Confirm};
-use frikadellen_baf::{
+use dialoguer::{Confirm, Input};
+use hungz_flipper::utils::restart_process;
+use hungz_flipper::{
+    bot::BotClient,
     config::ConfigLoader,
     logging::{init_logger, print_mc_chat},
     state::CommandQueue,
-    websocket::CoflWebSocket,
-    bot::BotClient,
     types::Flip,
     web::{start_web_server, WebSharedState},
+    websocket::CoflWebSocket,
 };
-use tracing::{debug, error, info, warn};
-use tokio::time::{sleep, Duration};
-use tokio::sync::broadcast;
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 use std::collections::HashMap;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use std::time::Instant;
-use frikadellen_baf::utils::restart_process;
+use tokio::sync::broadcast;
+use tokio::time::{sleep, Duration};
+use tracing::{debug, error, info, warn};
 
 const VERSION: &str = "af-3.0";
 const PERIODIC_AH_CLAIM_CHECK_INTERVAL_SECS: u64 = 300;
 /// If no auction has been listed for this many seconds, force a `/cofl sellinventory`
 /// plus claim sold/purchased auctions to unblock stuck inventory.
 const INVENTORY_IDLE_SELLINVENTORY_SECS: u64 = 30 * 60; // 30 minutes
-const GITHUB_REPO: &str = "TreXito/frikadellen-baf-121";
+const GITHUB_REPO: &str = "vuthaihung0608/hungz-flipper";
 
 /// Base delay per consecutive rejoin attempt (seconds).
 const REJOIN_BACKOFF_BASE_SECS: u64 = 60;
@@ -92,7 +95,11 @@ fn format_coins(amount: i64) -> String {
         result.push(c);
     }
     let formatted: String = result.chars().rev().collect();
-    if negative { format!("-{}", formatted) } else { formatted }
+    if negative {
+        format!("-{}", formatted)
+    } else {
+        formatted
+    }
 }
 
 /// Format an f64 coin amount with comma separators, preserving one decimal
@@ -137,15 +144,16 @@ fn parse_cofl_profit_response(clean_msg: &str) -> Option<i64> {
 /// Parse a human-readable short number like `82.7M`, `1.5B`, `250K`, or `500`.
 fn parse_short_number(s: &str) -> Option<i64> {
     let s = s.replace(',', "");
-    let (num_part, multiplier) = if let Some(n) = s.strip_suffix('B').or_else(|| s.strip_suffix('b')) {
-        (n, 1_000_000_000f64)
-    } else if let Some(n) = s.strip_suffix('M').or_else(|| s.strip_suffix('m')) {
-        (n, 1_000_000f64)
-    } else if let Some(n) = s.strip_suffix('K').or_else(|| s.strip_suffix('k')) {
-        (n, 1_000f64)
-    } else {
-        (s.as_str(), 1f64)
-    };
+    let (num_part, multiplier) =
+        if let Some(n) = s.strip_suffix('B').or_else(|| s.strip_suffix('b')) {
+            (n, 1_000_000_000f64)
+        } else if let Some(n) = s.strip_suffix('M').or_else(|| s.strip_suffix('m')) {
+            (n, 1_000_000f64)
+        } else if let Some(n) = s.strip_suffix('K').or_else(|| s.strip_suffix('k')) {
+            (n, 1_000f64)
+        } else {
+            (s.as_str(), 1f64)
+        };
     let val: f64 = num_part.parse().ok()?;
     Some((val * multiplier) as i64)
 }
@@ -239,28 +247,29 @@ fn parse_cofl_bz_h_total_profit(clean_msg: &str) -> Option<i64> {
     let idx = clean_msg.find(prefix)?;
     let after = &clean_msg[idx + prefix.len()..];
     // Take until the next whitespace or end of string.
-    let value_str: String = after.chars()
+    let value_str: String = after
+        .chars()
         .take_while(|c| !c.is_whitespace() && *c != '\n' && *c != '\r')
         .collect();
     parse_short_number(&value_str)
 }
 
 fn should_enqueue_periodic_auction_claim(
-    bot_state: frikadellen_baf::types::BotState,
+    bot_state: hungz_flipper::types::BotState,
     queue_empty: bool,
 ) -> bool {
     bot_state.allows_commands() && queue_empty
 }
 
 fn should_drop_bazaar_command_during_ah_pause(
-    command_type: &frikadellen_baf::types::CommandType,
+    command_type: &hungz_flipper::types::CommandType,
     bazaar_flips_paused: bool,
 ) -> bool {
     bazaar_flips_paused
         && matches!(
             command_type,
-            frikadellen_baf::types::CommandType::BazaarBuyOrder { .. }
-            | frikadellen_baf::types::CommandType::ManageOrders { .. }
+            hungz_flipper::types::CommandType::BazaarBuyOrder { .. }
+                | hungz_flipper::types::CommandType::ManageOrders { .. }
         )
 }
 
@@ -286,14 +295,17 @@ struct GithubRelease {
 /// the binary to the latest release.
 async fn check_version_outdated() {
     let client = match reqwest::Client::builder()
-        .user_agent("FrikadellenBAF/version-check")
+        .user_agent("HungzFlipper/version-check")
         .timeout(std::time::Duration::from_secs(8))
         .build()
     {
         Ok(c) => c,
         Err(_) => return,
     };
-    let url = format!("https://api.github.com/repos/{}/releases/latest", GITHUB_REPO);
+    let url = format!(
+        "https://api.github.com/repos/{}/releases/latest",
+        GITHUB_REPO
+    );
     let resp = match client.get(&url).send().await {
         Ok(r) if r.status().is_success() => r,
         _ => return,
@@ -318,14 +330,18 @@ async fn check_version_outdated() {
     if latest_tag == local_version {
         return; // Up to date
     }
-    let date_info = release.published_at
+    let date_info = release
+        .published_at
         .as_deref()
         .and_then(|d| d.split('T').next())
         .unwrap_or("unknown date");
     warn!("========================================");
     warn!("YOU ARE USING AN OUTDATED CLIENT, BUG REPORTS ARE NOT VALID FOR OUTDATED CLIENTS");
-    warn!("Current version: {}  |  Latest release: {} ({})", local_version, latest_tag, date_info);
-    warn!("Download the latest release or use the FrikadellenBAF-loader for automatic updates.");
+    warn!(
+        "Current version: {}  |  Latest release: {} ({})",
+        local_version, latest_tag, date_info
+    );
+    warn!("Download the latest release or use the HungzFlipper-loader for automatic updates.");
     warn!("========================================");
 }
 
@@ -361,7 +377,15 @@ fn load_session_times(path: &std::path::Path) -> HashMap<String, SessionTimeEntr
     if let Ok(old) = serde_json::from_str::<HashMap<String, u64>>(&raw) {
         return old
             .into_keys()
-            .map(|k| (k, SessionTimeEntry { secs: 0, saved_at: 0 }))
+            .map(|k| {
+                (
+                    k,
+                    SessionTimeEntry {
+                        secs: 0,
+                        saved_at: 0,
+                    },
+                )
+            })
             .collect();
     }
     HashMap::new()
@@ -399,7 +423,7 @@ fn clear_session_time(path: &std::path::Path, ign: &str) {
 async fn main() -> Result<()> {
     // Initialize logging
     init_logger()?;
-    info!("Starting Frikadellen BAF v{}", VERSION);
+    info!("Starting Hungz Flipper v{}", VERSION);
 
     // Check for outdated version (non-loader users).
     // Runs synchronously before the main loop so the warning appears at the very top of the log.
@@ -472,7 +496,10 @@ async fn main() -> Result<()> {
 
     // Read and advance the stored account index (wraps around the list).
     let account_index_path = match std::env::current_exe() {
-        Ok(p) => p.parent().map(|d| d.join("account_index")).unwrap_or_else(|| std::path::PathBuf::from("account_index")),
+        Ok(p) => p
+            .parent()
+            .map(|d| d.join("account_index"))
+            .unwrap_or_else(|| std::path::PathBuf::from("account_index")),
         Err(_) => std::path::PathBuf::from("account_index"),
     };
 
@@ -504,8 +531,10 @@ async fn main() -> Result<()> {
             if gap <= MAX_SESSION_GAP_SECS {
                 entry.secs
             } else {
-                info!("Session gap for {} is {}s (>{} max) — starting fresh session",
-                    ingame_name, gap, MAX_SESSION_GAP_SECS);
+                info!(
+                    "Session gap for {} is {}s (>{} max) — starting fresh session",
+                    ingame_name, gap, MAX_SESSION_GAP_SECS
+                );
                 0
             }
         } else {
@@ -513,13 +542,36 @@ async fn main() -> Result<()> {
         }
     };
     if previous_session_secs > 0 {
-        info!("Resumed session for {} — previous accumulated time: {}s ({:.2}h)",
-            ingame_name, previous_session_secs, previous_session_secs as f64 / 3600.0);
+        info!(
+            "Resumed session for {} — previous accumulated time: {}s ({:.2}h)",
+            ingame_name,
+            previous_session_secs,
+            previous_session_secs as f64 / 3600.0
+        );
     }
 
-    info!("Configuration loaded for player: {} (account {}/{})", ingame_name, current_account_index + 1, ingame_names.len());
-    info!("AH Flips: {}", if config.enable_ah_flips { "ENABLED" } else { "DISABLED" });
-    info!("Bazaar Flips: {}", if config.enable_bazaar_flips { "ENABLED" } else { "DISABLED" });
+    info!(
+        "Configuration loaded for player: {} (account {}/{})",
+        ingame_name,
+        current_account_index + 1,
+        ingame_names.len()
+    );
+    info!(
+        "AH Flips: {}",
+        if config.enable_ah_flips {
+            "ENABLED"
+        } else {
+            "DISABLED"
+        }
+    );
+    info!(
+        "Bazaar Flips: {}",
+        if config.enable_bazaar_flips {
+            "ENABLED"
+        } else {
+            "DISABLED"
+        }
+    );
     info!("Web GUI Port: {}", config.web_gui_port);
 
     if config.proxy_enabled {
@@ -583,9 +635,12 @@ async fn main() -> Result<()> {
         // Check if session is expired
         if session.expires < chrono::Utc::now() {
             // Session expired, generate new one
-            info!("Session expired for {}, generating new session ID", ingame_name);
+            info!(
+                "Session expired for {}, generating new session ID",
+                ingame_name
+            );
             let new_id = uuid::Uuid::new_v4().to_string();
-            let new_session = frikadellen_baf::config::types::CoflSession {
+            let new_session = hungz_flipper::config::types::CoflSession {
                 id: new_id.clone(),
                 expires: chrono::Utc::now() + chrono::Duration::days(180), // 180 days like TypeScript
             };
@@ -599,9 +654,12 @@ async fn main() -> Result<()> {
         }
     } else {
         // No session exists, create new one
-        info!("No session found for {}, generating new session ID", ingame_name);
+        info!(
+            "No session found for {}, generating new session ID",
+            ingame_name
+        );
         let new_id = uuid::Uuid::new_v4().to_string();
-        let new_session = frikadellen_baf::config::types::CoflSession {
+        let new_session = hungz_flipper::config::types::CoflSession {
             id: new_id.clone(),
             expires: chrono::Utc::now() + chrono::Duration::days(180), // 180 days like TypeScript
         };
@@ -611,14 +669,15 @@ async fn main() -> Result<()> {
     };
 
     info!("Connecting to Coflnet WebSocket...");
-    
+
     // Connect to Coflnet WebSocket
     let (ws_client, mut ws_rx) = CoflWebSocket::connect(
         config.websocket_url.clone(),
         ingame_name.clone(),
         VERSION.to_string(),
         session_id.clone(),
-    ).await?;
+    )
+    .await?;
 
     info!("WebSocket connected successfully");
 
@@ -636,7 +695,15 @@ async fn main() -> Result<()> {
             tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
             let conn_id = conn_id_init.lock().ok().and_then(|g| g.clone());
             let premium = premium_init.lock().ok().and_then(|g| g.clone());
-            frikadellen_baf::webhook::send_webhook_initialized(&name, ah, bz, conn_id.as_deref(), premium.as_ref().map(|(t, e)| (t.as_str(), e.as_str())), &url).await;
+            hungz_flipper::webhook::send_webhook_initialized(
+                &name,
+                ah,
+                bz,
+                conn_id.as_deref(),
+                premium.as_ref().map(|(t, e)| (t.as_str(), e.as_str())),
+                &url,
+            )
+            .await;
         });
     }
 
@@ -653,11 +720,15 @@ async fn main() -> Result<()> {
             let message = serde_json::json!({
                 "type": "licenses",
                 "data": data_json
-            }).to_string();
+            })
+            .to_string();
             if let Err(e) = ws_license.send_message(&message).await {
                 warn!("[LicenseDetect] Failed to request licenses list: {}", e);
             } else {
-                info!("[LicenseDetect] Requested COFL licenses list for '{}'", current_ign);
+                info!(
+                    "[LicenseDetect] Requested COFL licenses list for '{}'",
+                    current_ign
+                );
             }
         });
     }
@@ -670,17 +741,18 @@ async fn main() -> Result<()> {
     bot_client.skip = config.skip_enabled();
     bot_client.bed_spam_click_delay = config.bed_spam_click_delay;
     bot_client.bed_pre_click_ms = config.bed_pre_click_ms;
-    bot_client.bazaar_order_cancel_minutes_per_million = config.bazaar_order_cancel_minutes_per_million;
+    bot_client.bazaar_order_cancel_minutes_per_million =
+        config.bazaar_order_cancel_minutes_per_million;
     bot_client.bazaar_flips_paused = bazaar_flips_paused.clone();
     bot_client.enable_bazaar_flips = enable_bazaar_flips.clone();
     bot_client.set_command_queue(command_queue.clone());
     *bot_client.ingame_name.write() = ingame_name.clone();
 
     // Shared profit tracker for AH and Bazaar realized profits.
-    let profit_tracker = Arc::new(frikadellen_baf::profit::ProfitTracker::new());
+    let profit_tracker = Arc::new(hungz_flipper::profit::ProfitTracker::new());
 
     // Shared tracker for active bazaar orders (web panel + profit calculation).
-    let bazaar_tracker = Arc::new(frikadellen_baf::bazaar_tracker::BazaarOrderTracker::new());
+    let bazaar_tracker = Arc::new(hungz_flipper::bazaar_tracker::BazaarOrderTracker::new());
 
     // Start web control panel server BEFORE bot connect so the chat GUI
     // is available to show login links during Microsoft/Coflnet auth.
@@ -721,7 +793,7 @@ async fn main() -> Result<()> {
     // If a VPS_SECRET environment variable is present, connect to the managed
     // hosting backend at wss://sky.coflnet.com/instances.  This allows the
     // SkyCofl backend to orchestrate instances running on this host.
-    if let Some(vps_socket) = frikadellen_baf::vps::VpsSocket::from_env() {
+    if let Some(vps_socket) = hungz_flipper::vps::VpsSocket::from_env() {
         info!("[VPS] VPS_SECRET detected — starting managed hosting socket");
         tokio::spawn(async move {
             vps_socket.run().await;
@@ -745,14 +817,18 @@ async fn main() -> Result<()> {
 
         let mut last_err: Option<String> = None;
         for attempt in 1..=AUTH_MAX_RETRIES {
-            match bot_client.connect(ingame_name.clone(), Some(ws_client.clone())).await {
+            match bot_client
+                .connect(ingame_name.clone(), Some(ws_client.clone()))
+                .await
+            {
                 Ok(_) => {
                     info!("Bot connection initiated successfully");
                     last_err = None;
                     break;
                 }
                 Err(e) => {
-                    let backoff = AUTH_INITIAL_BACKOFF_SECS.saturating_mul(1u64 << (attempt - 1).min(5)); // 10s, 20s, 40s for 3 retries; .min(5) caps shift for safety
+                    let backoff =
+                        AUTH_INITIAL_BACKOFF_SECS.saturating_mul(1u64 << (attempt - 1).min(5)); // 10s, 20s, 40s for 3 retries; .min(5) caps shift for safety
                     warn!(
                         "Failed to connect bot (attempt {}/{}): {} — retrying in {}s",
                         attempt, AUTH_MAX_RETRIES, e, backoff
@@ -767,10 +843,15 @@ async fn main() -> Result<()> {
                     // Notify via Discord webhook so the user knows auth is failing
                     if let Some(webhook_url) = config.active_webhook_url() {
                         let err_str = format!("{}", e);
-                        frikadellen_baf::webhook::send_webhook_auth_failed(
-                            &ingame_name, attempt, AUTH_MAX_RETRIES, &err_str,
-                            config.active_discord_id(), webhook_url,
-                        ).await;
+                        hungz_flipper::webhook::send_webhook_auth_failed(
+                            &ingame_name,
+                            attempt,
+                            AUTH_MAX_RETRIES,
+                            &err_str,
+                            config.active_discord_id(),
+                            webhook_url,
+                        )
+                        .await;
                     }
                     tokio::time::sleep(Duration::from_secs(backoff)).await;
                 }
@@ -783,10 +864,15 @@ async fn main() -> Result<()> {
             );
             // Send final "all attempts failed" webhook before restarting
             if let Some(webhook_url) = config.active_webhook_url() {
-                frikadellen_baf::webhook::send_webhook_auth_failed(
-                    &ingame_name, AUTH_MAX_RETRIES, AUTH_MAX_RETRIES, &err,
-                    config.active_discord_id(), webhook_url,
-                ).await;
+                hungz_flipper::webhook::send_webhook_auth_failed(
+                    &ingame_name,
+                    AUTH_MAX_RETRIES,
+                    AUTH_MAX_RETRIES,
+                    &err,
+                    config.active_discord_id(),
+                    webhook_url,
+                )
+                .await;
             }
             let baf_msg = format!(
                 "§f[§4BAF§f]: §cAll {} auth attempts failed — restarting...",
@@ -802,7 +888,11 @@ async fn main() -> Result<()> {
 
     // BZ automatic allocation state
     let bz_top_items = Arc::new(tokio::sync::Mutex::new(Vec::<(String, f64, f64)>::new()));
-    let bz_blacklisted_items = Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::<String>::new()));
+    let bz_blacklisted_items = Arc::new(tokio::sync::Mutex::new({
+        let mut set = std::collections::HashSet::<String>::new();
+        set.insert("essence_fossil".to_string());
+        set
+    }));
 
     // Spawn bot event handler
     let bot_client_clone = bot_client.clone();
@@ -829,54 +919,63 @@ async fn main() -> Result<()> {
     tokio::spawn(async move {
         while let Some(event) = bot_client_clone.next_event().await {
             match event {
-                frikadellen_baf::bot::BotEvent::Login => {
+                hungz_flipper::bot::BotEvent::Login => {
                     info!("✓ Bot logged into Minecraft successfully");
                 }
-                frikadellen_baf::bot::BotEvent::Spawn => {
+                hungz_flipper::bot::BotEvent::Spawn => {
                     info!("✓ Bot spawned in world and ready");
                 }
-                frikadellen_baf::bot::BotEvent::ChatMessage(msg) => {
+                hungz_flipper::bot::BotEvent::ChatMessage(msg) => {
                     // Print Minecraft chat with color codes converted to ANSI
                     print_mc_chat(&msg);
                     // Broadcast to web panel clients
                     let _ = chat_tx_events.send(msg.clone());
 
-                    let clean = frikadellen_baf::utils::remove_minecraft_colors(&msg);
+                    let clean = hungz_flipper::utils::remove_minecraft_colors(&msg);
 
                     // Parse Coflnet profit response:
                     // "According to our data <ign> made <amount> in the last <days> days across <N> auctions"
                     if let Some(profit) = parse_cofl_profit_response(&clean) {
                         profit_tracker_events.set_ah_total(profit);
-                        tracing::info!("[CoflProfit] Updated AH total from Coflnet: {} coins", profit);
+                        tracing::info!(
+                            "[CoflProfit] Updated AH total from Coflnet: {} coins",
+                            profit
+                        );
                     }
 
                     // Handle requirement rejection from Hypixel ("You must have Catacombs Skill 20!", "Requires Combat Skill 16", etc)
-                    if (clean.contains("You must have ") || clean.contains("Requires ") || clean.contains("You don't have the required"))
-                        && bot_client_clone.state() == frikadellen_baf::types::BotState::Bazaar {
+                    if (clean.contains("You must have ")
+                        || clean.contains("Requires ")
+                        || clean.contains("You don't have the required"))
+                        && bot_client_clone.state() == hungz_flipper::types::BotState::Bazaar
+                    {
                         tracing::warn!("[Bazaar] Rejected item due to requirements: {}", clean);
-                        
+
                         // Use the currently tracked bazaar item name instead of guessing from window title
                         if let Some(item_name) = bot_client_clone.get_bazaar_item_name() {
-                                tracing::warn!("[Bazaar] Blacklisting item from flip tracker (failed requirements): {}", item_name);
-                                tokio::spawn({
-                                    let items_arc = bz_top_items_events.clone();
-                                    let blacklist_arc = bz_blacklisted_items_events.clone();
-                                    let name = item_name.clone();
-                                    async move {
-                                        blacklist_arc.lock().await.insert(name.clone().to_lowercase());
-                                        let mut items = items_arc.lock().await;
-                                        let initial_len = items.len();
-                                        items.retain(|(n, _, _)| !n.eq_ignore_ascii_case(&name));
-                                        if items.len() < initial_len {
-                                            tracing::info!("[Bazaar] Removed {} from top flips memory due to requirement failure", name);
-                                        }
+                            tracing::warn!("[Bazaar] Blacklisting item from flip tracker (failed requirements): {}", item_name);
+                            tokio::spawn({
+                                let items_arc = bz_top_items_events.clone();
+                                let blacklist_arc = bz_blacklisted_items_events.clone();
+                                let name = item_name.clone();
+                                async move {
+                                    blacklist_arc
+                                        .lock()
+                                        .await
+                                        .insert(name.clone().to_lowercase());
+                                    let mut items = items_arc.lock().await;
+                                    let initial_len = items.len();
+                                    items.retain(|(n, _, _)| !n.eq_ignore_ascii_case(&name));
+                                    if items.len() < initial_len {
+                                        tracing::info!("[Bazaar] Removed {} from top flips memory due to requirement failure", name);
+                                    }
                                 }
                             });
                         } else {
                             tracing::warn!("[Bazaar] Could not determine which item failed requirements! Current target item is None.");
                         }
 
-                        bot_client_clone.set_state(frikadellen_baf::types::BotState::Idle);
+                        bot_client_clone.set_state(hungz_flipper::types::BotState::Idle);
                         // Also close window manually as we might be stuck on it
                         bot_client_clone.close_current_window();
                     }
@@ -884,12 +983,15 @@ async fn main() -> Result<()> {
                     // Parse `/cofl bz h` response for authoritative BZ session profit.
                     // "Total Profit: -234M" (inside "Bazaar Profit History for <ign> ...")
                     if let Some(bz_profit) = parse_cofl_bz_h_total_profit(&clean) {
-                        profit_tracker_events.set_bz_total(bz_profit);
-                        tracing::info!("[CoflBzH] Updated BZ total from /cofl bz h: {} coins", bz_profit);
+                        // user requested to use our internal store instead, so we just log it
+                        // profit_tracker_events.set_bz_total(bz_profit);
+                        tracing::info!(
+                            "[CoflBzH] Read BZ total from /cofl bz h: {} coins",
+                            bz_profit
+                        );
                     }
 
                     // (Removed /cofl bz chat parsing)
-
 
                     // Detect bazaar daily sell value limit
                     if clean.contains("You reached the daily limit") && clean.contains("bazaar") {
@@ -899,40 +1001,56 @@ async fn main() -> Result<()> {
                             let url = webhook_url.to_string();
                             let name = ingame_name_for_events.clone();
                             tokio::spawn(async move {
-                                frikadellen_baf::webhook::send_webhook_bazaar_daily_limit(&name, &url).await;
+                                hungz_flipper::webhook::send_webhook_bazaar_daily_limit(
+                                    &name, &url,
+                                )
+                                .await;
                             });
                         }
                         // Schedule auto-clear of daily limit flag at next 0:00 UTC
                         let bot_for_reset = bot_client_clone.clone();
                         let chat_tx_dl = chat_tx_events.clone();
                         tokio::spawn(async move {
-                            let midnight = frikadellen_baf::webhook::next_utc_midnight_unix();
+                            let midnight = hungz_flipper::webhook::next_utc_midnight_unix();
                             let now = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .unwrap_or_default()
                                 .as_secs();
                             let secs_until_midnight = midnight.saturating_sub(now);
-                            tracing::info!("[Bazaar] Scheduling daily-limit reset in {}s (0:00 UTC)", secs_until_midnight);
-                            tokio::time::sleep(tokio::time::Duration::from_secs(secs_until_midnight + DAILY_LIMIT_RESET_BUFFER_SECS)).await;
+                            tracing::info!(
+                                "[Bazaar] Scheduling daily-limit reset in {}s (0:00 UTC)",
+                                secs_until_midnight
+                            );
+                            tokio::time::sleep(tokio::time::Duration::from_secs(
+                                secs_until_midnight + DAILY_LIMIT_RESET_BUFFER_SECS,
+                            ))
+                            .await;
                             bot_for_reset.clear_bazaar_daily_limit();
-                            let reset_msg = "§f[§4BAF§f]: §aBazaar daily limit reset — flips re-enabled".to_string();
-                            frikadellen_baf::logging::print_mc_chat(&reset_msg);
+                            let reset_msg =
+                                "§f[§4BAF§f]: §aBazaar daily limit reset — flips re-enabled"
+                                    .to_string();
+                            hungz_flipper::logging::print_mc_chat(&reset_msg);
                             let _ = chat_tx_dl.send(reset_msg);
                             tracing::info!("[Bazaar] Daily limit reset — bazaar flips re-enabled");
                         });
                         let baf_msg = "§f[§4BAF§f]: §c⚠ Bazaar daily sell limit reached — flips disabled until 0:00 UTC".to_string();
-                        frikadellen_baf::logging::print_mc_chat(&baf_msg);
+                        hungz_flipper::logging::print_mc_chat(&baf_msg);
                         let _ = chat_tx_events.send(baf_msg);
                     }
                 }
-                frikadellen_baf::bot::BotEvent::WindowOpen(id, window_type, title) => {
-                    debug!("Window opened: {} (ID: {}, Type: {})", title, id, window_type);
+                hungz_flipper::bot::BotEvent::WindowOpen(id, window_type, title) => {
+                    debug!(
+                        "Window opened: {} (ID: {}, Type: {})",
+                        title, id, window_type
+                    );
 
                     // When the "Bazaar Orders" or "Co-op Bazaar Orders" window
                     // opens, send the full window NBT data to COFL so bazaar
                     // order state stays in sync with the SkyCofl backend.
                     let title_lower = title.to_lowercase();
-                    if title_lower.contains("bazaar orders") || title_lower.contains("co-op bazaar orders") {
+                    if title_lower.contains("bazaar orders")
+                        || title_lower.contains("co-op bazaar orders")
+                    {
                         let ws_upload = ws_client_for_events.clone();
                         let bot_upload = bot_client_clone.clone();
                         tokio::spawn(async move {
@@ -943,11 +1061,16 @@ async fn main() -> Result<()> {
                                 // The macro may have clicked an order which opens "Order Options",
                                 // overwriting the cached window JSON. Only upload if the title
                                 // still matches "Bazaar Orders" (not "Order Options" or other windows).
-                                let is_bazaar_orders = serde_json::from_str::<serde_json::Value>(&window_json)
-                                    .ok()
-                                    .and_then(|v| v.get("title").and_then(|t| t.as_str()).map(|s| s.to_lowercase()))
-                                    .map(|t| t.contains("bazaar orders"))
-                                    .unwrap_or(false);
+                                let is_bazaar_orders =
+                                    serde_json::from_str::<serde_json::Value>(&window_json)
+                                        .ok()
+                                        .and_then(|v| {
+                                            v.get("title")
+                                                .and_then(|t| t.as_str())
+                                                .map(|s| s.to_lowercase())
+                                        })
+                                        .map(|t| t.contains("bazaar orders"))
+                                        .unwrap_or(false);
 
                                 if !is_bazaar_orders {
                                     tracing::debug!("[UploadBazaarOrders] Skipping upload — window changed from Bazaar Orders");
@@ -957,49 +1080,56 @@ async fn main() -> Result<()> {
                                 let msg = serde_json::json!({
                                     "type": "UploadBazaarOrders",
                                     "data": window_json
-                                }).to_string();
+                                })
+                                .to_string();
                                 if let Err(e) = ws_upload.send_message(&msg).await {
                                     tracing::warn!("[UploadBazaarOrders] Failed to send bazaar window data: {}", e);
                                 } else {
-                                    tracing::info!("[UploadBazaarOrders] Sent bazaar window data to COFL");
+                                    tracing::info!(
+                                        "[UploadBazaarOrders] Sent bazaar window data to COFL"
+                                    );
                                 }
                             } else {
-                                tracing::debug!("[UploadBazaarOrders] No cached window JSON available");
+                                tracing::debug!(
+                                    "[UploadBazaarOrders] No cached window JSON available"
+                                );
                             }
                         });
                     }
                 }
-                frikadellen_baf::bot::BotEvent::WindowClose => {
+                hungz_flipper::bot::BotEvent::WindowClose => {
                     debug!("Window closed");
                 }
-                frikadellen_baf::bot::BotEvent::Disconnected(reason) => {
+                hungz_flipper::bot::BotEvent::Disconnected(reason) => {
                     warn!("Bot disconnected: {}", reason);
                     if is_ban_disconnect(&reason) {
                         error!("Ban detected — sending webhook and terminating process");
                         if let Some(webhook_url) = config_for_events.active_webhook_url() {
-                            frikadellen_baf::webhook::send_webhook_banned(
+                            hungz_flipper::webhook::send_webhook_banned(
                                 &ingame_name_for_events,
                                 &reason,
                                 config_for_events.active_discord_id(),
                                 webhook_url,
-                            ).await;
+                            )
+                            .await;
                         }
-                        frikadellen_baf::webhook::send_webhook_banned_public().await;
+                        hungz_flipper::webhook::send_webhook_banned_public().await;
                         // Terminate immediately so we don't reconnect and re-send the webhook
                         std::process::exit(1);
                     }
                 }
-                frikadellen_baf::bot::BotEvent::Kicked(reason) => {
+                hungz_flipper::bot::BotEvent::Kicked(reason) => {
                     warn!("Bot kicked: {}", reason);
                 }
-                frikadellen_baf::bot::BotEvent::NoCookieDetected => {
+                hungz_flipper::bot::BotEvent::NoCookieDetected => {
                     error!("No booster cookie detected — sending webhook and terminating process");
                     if let Some(webhook_url) = config_for_events.active_webhook_url() {
-                        frikadellen_baf::webhook::send_webhook_no_cookie(
+                        hungz_flipper::webhook::send_webhook_no_cookie(
                             &ingame_name_for_events,
                             config_for_events.active_discord_id(),
                             webhook_url,
-                        ).await;
+                        )
+                        .await;
                     }
                     let baf_msg = "§f[§4BAF§f]: §c⚠ No booster cookie — please log in manually and buy one, then start the bot again.".to_string();
                     print_mc_chat(&baf_msg);
@@ -1007,14 +1137,17 @@ async fn main() -> Result<()> {
                     // Terminate — the bot can't flip without a cookie
                     std::process::exit(1);
                 }
-                frikadellen_baf::bot::BotEvent::StartupComplete { orders_cancelled } => {
+                hungz_flipper::bot::BotEvent::StartupComplete { orders_cancelled } => {
                     info!("[Startup] Startup complete - bot is ready to flip! ({} order(s) cancelled)", orders_cancelled);
                     // Clear the bazaar order tracker for a clean slate — the startup
                     // ManageOrders cycle cancelled all in-game orders already.
                     {
                         let removed = bazaar_tracker_events.clear_all_orders();
                         if removed > 0 {
-                            info!("[Startup] Cleared {} stale order(s) from bazaar tracker", removed);
+                            info!(
+                                "[Startup] Cleared {} stale order(s) from bazaar tracker",
+                                removed
+                            );
                         }
                     }
                     // Also clear the auction slot blocked flag on startup
@@ -1024,14 +1157,24 @@ async fn main() -> Result<()> {
                         let scoreboard_lines = bot_client_clone.get_scoreboard_lines();
                         let ws = ws_client_for_events.clone();
                         tokio::spawn(async move {
-                            let data_json = serde_json::to_string(&scoreboard_lines).unwrap_or_else(|_| "[]".to_string());
-                            let scoreboard_msg = serde_json::json!({"type": "uploadScoreboard", "data": data_json}).to_string();
-                            let tab_msg = serde_json::json!({"type": "uploadTab", "data": "[]"}).to_string();
-                            debug!("[Startup] Sending uploadScoreboard to COFL: {:?}", scoreboard_lines);
+                            let data_json = serde_json::to_string(&scoreboard_lines)
+                                .unwrap_or_else(|_| "[]".to_string());
+                            let scoreboard_msg =
+                                serde_json::json!({"type": "uploadScoreboard", "data": data_json})
+                                    .to_string();
+                            let tab_msg =
+                                serde_json::json!({"type": "uploadTab", "data": "[]"}).to_string();
+                            debug!(
+                                "[Startup] Sending uploadScoreboard to COFL: {:?}",
+                                scoreboard_lines
+                            );
                             let _ = ws.send_message(&scoreboard_msg).await;
                             debug!("[Startup] Sending uploadTab to COFL (empty)");
                             let _ = ws.send_message(&tab_msg).await;
-                            debug!("[Startup] Uploaded scoreboard ({} lines)", scoreboard_lines.len());
+                            debug!(
+                                "[Startup] Uploaded scoreboard ({} lines)",
+                                scoreboard_lines.len()
+                            );
                         });
                     }
                     // COFL now automatically sends bazaar flip recommendations based
@@ -1049,9 +1192,13 @@ async fn main() -> Result<()> {
                             let msg = serde_json::json!({
                                 "type": "set",
                                 "data": data_json
-                            }).to_string();
+                            })
+                            .to_string();
                             if let Err(e) = ws.send_message(&msg).await {
-                                error!("[Startup] Failed to send /cofl set maxitemsininventory {}: {}", max_items, e);
+                                error!(
+                                    "[Startup] Failed to send /cofl set maxitemsininventory {}: {}",
+                                    max_items, e
+                                );
                             } else {
                                 info!("[Startup] Sent /cofl set maxitemsininventory {}", max_items);
                             }
@@ -1063,22 +1210,45 @@ async fn main() -> Result<()> {
                         let name = ingame_name_for_events.clone();
                         let ah = config_for_events.enable_ah_flips;
                         let bz = config_for_events.enable_bazaar_flips;
-                        let conn_id = cofl_connection_id_events.lock().ok().and_then(|g| g.clone());
+                        let conn_id = cofl_connection_id_events
+                            .lock()
+                            .ok()
+                            .and_then(|g| g.clone());
                         let premium = cofl_premium_events.lock().ok().and_then(|g| g.clone());
                         tokio::spawn(async move {
-                            frikadellen_baf::webhook::send_webhook_startup_complete(&name, orders_cancelled, ah, bz, conn_id.as_deref(), premium.as_ref().map(|(t, e)| (t.as_str(), e.as_str())), &url).await;
+                            hungz_flipper::webhook::send_webhook_startup_complete(
+                                &name,
+                                orders_cancelled,
+                                ah,
+                                bz,
+                                conn_id.as_deref(),
+                                premium.as_ref().map(|(t, e)| (t.as_str(), e.as_str())),
+                                &url,
+                            )
+                            .await;
                         });
                     }
                 }
-                frikadellen_baf::bot::BotEvent::ItemPurchased { item_name, price, buy_speed_ms: event_buy_speed_ms } => {
+                hungz_flipper::bot::BotEvent::ItemPurchased {
+                    item_name,
+                    price,
+                    buy_speed_ms: event_buy_speed_ms,
+                } => {
                     // Send uploadScoreboard (with real data) and uploadTab to COFL
                     let ws = ws_client_for_events.clone();
                     let scoreboard_lines = bot_client_clone.get_scoreboard_lines();
                     tokio::spawn(async move {
-                        let data_json = serde_json::to_string(&scoreboard_lines).unwrap_or_else(|_| "[]".to_string());
-                        let scoreboard_msg = serde_json::json!({"type": "uploadScoreboard", "data": data_json}).to_string();
-                        let tab_msg = serde_json::json!({"type": "uploadTab", "data": "[]"}).to_string();
-                        debug!("[ItemPurchased] Sending uploadScoreboard to COFL: {:?}", scoreboard_lines);
+                        let data_json = serde_json::to_string(&scoreboard_lines)
+                            .unwrap_or_else(|_| "[]".to_string());
+                        let scoreboard_msg =
+                            serde_json::json!({"type": "uploadScoreboard", "data": data_json})
+                                .to_string();
+                        let tab_msg =
+                            serde_json::json!({"type": "uploadTab", "data": "[]"}).to_string();
+                        debug!(
+                            "[ItemPurchased] Sending uploadScoreboard to COFL: {:?}",
+                            scoreboard_lines
+                        );
                         let _ = ws.send_message(&scoreboard_msg).await;
                         debug!("[ItemPurchased] Sending uploadTab to COFL (empty)");
                         let _ = ws.send_message(&tab_msg).await;
@@ -1093,8 +1263,8 @@ async fn main() -> Result<()> {
                         let _ = chat_tx_events.send(baf_msg);
                     } else {
                         command_queue_clone.enqueue(
-                            frikadellen_baf::types::CommandType::ClaimPurchasedItem,
-                            frikadellen_baf::types::CommandPriority::Normal,
+                            hungz_flipper::types::CommandType::ClaimPurchasedItem,
+                            hungz_flipper::types::CommandPriority::Normal,
                             false,
                         );
                     }
@@ -1102,7 +1272,8 @@ async fn main() -> Result<()> {
                     // Also grab the color-coded item name from the flip for colorful output.
                     // Buy speed comes from the event (flip received → escrow message).
                     let (opt_target, opt_profit, colored_name, opt_auction_uuid, opt_finder) = {
-                        let key = frikadellen_baf::utils::remove_minecraft_colors(&item_name).to_lowercase();
+                        let key = hungz_flipper::utils::remove_minecraft_colors(&item_name)
+                            .to_lowercase();
                         match flip_tracker_events.lock() {
                             Ok(mut tracker) => {
                                 if let Some(entry) = tracker.get_mut(&key) {
@@ -1110,10 +1281,17 @@ async fn main() -> Result<()> {
                                     entry.2 = Instant::now(); // purchase time
                                     let target = entry.0.target;
                                     let ah_fee = calculate_ah_fee(target);
-                                    let expected_profit = target as i64 - price as i64 - ah_fee as i64;
+                                    let expected_profit =
+                                        target as i64 - price as i64 - ah_fee as i64;
                                     let uuid = entry.0.uuid.clone();
                                     let finder = entry.0.finder.clone();
-                                    (Some(target), Some(expected_profit), entry.0.item_name.clone(), uuid, finder)
+                                    (
+                                        Some(target),
+                                        Some(expected_profit),
+                                        entry.0.item_name.clone(),
+                                        uuid,
+                                        finder,
+                                    )
                                 } else {
                                     (None, None, item_name.clone(), None, None)
                                 }
@@ -1125,20 +1303,29 @@ async fn main() -> Result<()> {
                         }
                     };
                     // Print colorful purchase announcement (item rarity shown via color code)
-                    let profit_str = opt_profit.map(|p| {
-                        let color = if p >= 0 { "§a" } else { "§c" };
-                        format!(" §7| Expected profit: {}{}§r", color, format_coins(p))
-                    }).unwrap_or_default();
-                    let speed_str = event_buy_speed_ms.map(|ms| format!(" §7| Buy speed: §e{}ms§r", ms)).unwrap_or_default();
+                    let profit_str = opt_profit
+                        .map(|p| {
+                            let color = if p >= 0 { "§a" } else { "§c" };
+                            format!(" §7| Expected profit: {}{}§r", color, format_coins(p))
+                        })
+                        .unwrap_or_default();
+                    let speed_str = event_buy_speed_ms
+                        .map(|ms| format!(" §7| Buy speed: §e{}ms§r", ms))
+                        .unwrap_or_default();
                     let baf_msg = format!(
                         "§f[§4BAF§f]: §a✦ PURCHASED §r{}§r §7for §6{}§7 coins!{}{}",
-                        colored_name, format_coins(price as i64), profit_str, speed_str
+                        colored_name,
+                        format_coins(price as i64),
+                        profit_str,
+                        speed_str
                     );
                     print_mc_chat(&baf_msg);
                     let _ = chat_tx_events.send(baf_msg);
                     // Send webhook: for legendary/divine flips, send the styled
                     // webhook (with ping + color) instead of the regular purchase one.
-                    let is_legendary_flip = opt_profit.is_some_and(|p| p >= frikadellen_baf::webhook::LEGENDARY_PROFIT_THRESHOLD as i64);
+                    let is_legendary_flip = opt_profit.is_some_and(|p| {
+                        p >= hungz_flipper::webhook::LEGENDARY_PROFIT_THRESHOLD as i64
+                    });
                     let opt_finder_for_flip = opt_finder.clone();
                     if is_legendary_flip {
                         if let Some(profit) = opt_profit {
@@ -1148,25 +1335,45 @@ async fn main() -> Result<()> {
                                 let url = webhook_url.to_string();
                                 let name = ingame_name_for_events.clone();
                                 let item = item_name.clone();
-                                let did = config_for_events.active_discord_id().map(|s| s.to_string());
+                                let did =
+                                    config_for_events.active_discord_id().map(|s| s.to_string());
                                 let purse = bot_client_clone.get_purse();
                                 let uuid_str = opt_auction_uuid.clone();
                                 let finder = opt_finder_for_flip.clone();
-                                if profit >= frikadellen_baf::webhook::DIVINE_PROFIT_THRESHOLD as i64 {
+                                if profit >= hungz_flipper::webhook::DIVINE_PROFIT_THRESHOLD as i64
+                                {
                                     tokio::spawn(async move {
-                                        frikadellen_baf::webhook::send_webhook_divine_flip(
-                                            &name, &item, price, opt_target, profit, purse,
-                                            event_buy_speed_ms, uuid_str.as_deref(), finder.as_deref(),
-                                            did.as_deref(), &url,
-                                        ).await;
+                                        hungz_flipper::webhook::send_webhook_divine_flip(
+                                            &name,
+                                            &item,
+                                            price,
+                                            opt_target,
+                                            profit,
+                                            purse,
+                                            event_buy_speed_ms,
+                                            uuid_str.as_deref(),
+                                            finder.as_deref(),
+                                            did.as_deref(),
+                                            &url,
+                                        )
+                                        .await;
                                     });
                                 } else {
                                     tokio::spawn(async move {
-                                        frikadellen_baf::webhook::send_webhook_legendary_flip(
-                                            &name, &item, price, opt_target, profit, purse,
-                                            event_buy_speed_ms, uuid_str.as_deref(), finder.as_deref(),
-                                            did.as_deref(), &url,
-                                        ).await;
+                                        hungz_flipper::webhook::send_webhook_legendary_flip(
+                                            &name,
+                                            &item,
+                                            price,
+                                            opt_target,
+                                            profit,
+                                            purse,
+                                            event_buy_speed_ms,
+                                            uuid_str.as_deref(),
+                                            finder.as_deref(),
+                                            did.as_deref(),
+                                            &url,
+                                        )
+                                        .await;
                                     });
                                 }
                             } else {
@@ -1174,10 +1381,15 @@ async fn main() -> Result<()> {
                                 let item_for_channel = item_name.clone();
                                 let finder_for_channel = opt_finder_for_flip.clone();
                                 tokio::spawn(async move {
-                                    frikadellen_baf::webhook::send_webhook_flip_channel(
-                                        &item_for_channel, price, opt_target, profit,
-                                        event_buy_speed_ms, finder_for_channel.as_deref(),
-                                    ).await;
+                                    hungz_flipper::webhook::send_webhook_flip_channel(
+                                        &item_for_channel,
+                                        price,
+                                        opt_target,
+                                        profit,
+                                        event_buy_speed_ms,
+                                        finder_for_channel.as_deref(),
+                                    )
+                                    .await;
                                 });
                             }
                         }
@@ -1190,30 +1402,45 @@ async fn main() -> Result<()> {
                             let purse = bot_client_clone.get_purse();
                             let uuid_str = opt_auction_uuid.clone();
                             tokio::spawn(async move {
-                                frikadellen_baf::webhook::send_webhook_item_purchased(
-                                    &name, &item, price, opt_target, opt_profit, purse,
-                                    event_buy_speed_ms, uuid_str.as_deref(), opt_finder.as_deref(), &url,
-                                ).await;
+                                hungz_flipper::webhook::send_webhook_item_purchased(
+                                    &name,
+                                    &item,
+                                    price,
+                                    opt_target,
+                                    opt_profit,
+                                    purse,
+                                    event_buy_speed_ms,
+                                    uuid_str.as_deref(),
+                                    opt_finder.as_deref(),
+                                    &url,
+                                )
+                                .await;
                             });
                         }
                     }
                 }
-                frikadellen_baf::bot::BotEvent::ItemSold { item_name, price, buyer } => {
+                hungz_flipper::bot::BotEvent::ItemSold {
+                    item_name,
+                    price,
+                    buyer,
+                } => {
                     command_queue_clone.enqueue(
-                        frikadellen_baf::types::CommandType::ClaimSoldItem,
-                        frikadellen_baf::types::CommandPriority::High,
+                        hungz_flipper::types::CommandType::ClaimSoldItem,
+                        hungz_flipper::types::CommandPriority::High,
                         true,
                     );
                     // Look up flip data to calculate actual profit + time to sell
                     let (opt_profit, opt_buy_price, opt_time_secs, opt_auction_uuid) = {
-                        let key = frikadellen_baf::utils::remove_minecraft_colors(&item_name).to_lowercase();
+                        let key = hungz_flipper::utils::remove_minecraft_colors(&item_name)
+                            .to_lowercase();
                         match flip_tracker_events.lock() {
                             Ok(mut tracker) => {
                                 if let Some(entry) = tracker.remove(&key) {
                                     let (flip, buy_price, purchase_time, _receive_time) = entry;
                                     if buy_price > 0 {
                                         let ah_fee = calculate_ah_fee(price);
-                                        let profit = price as i64 - buy_price as i64 - ah_fee as i64;
+                                        let profit =
+                                            price as i64 - buy_price as i64 - ah_fee as i64;
                                         let time_secs = purchase_time.elapsed().as_secs();
                                         (Some(profit), Some(buy_price), Some(time_secs), flip.uuid)
                                     } else {
@@ -1234,13 +1461,18 @@ async fn main() -> Result<()> {
                         profit_tracker_events.record_ah_profit(profit);
                     }
                     // Print colorful sold announcement
-                    let profit_str = opt_profit.map(|p| {
-                        let color = if p >= 0 { "§a" } else { "§c" };
-                        format!(" §7| Profit: {}{}§r", color, format_coins(p))
-                    }).unwrap_or_default();
+                    let profit_str = opt_profit
+                        .map(|p| {
+                            let color = if p >= 0 { "§a" } else { "§c" };
+                            format!(" §7| Profit: {}{}§r", color, format_coins(p))
+                        })
+                        .unwrap_or_default();
                     let baf_msg = format!(
                         "§f[§4BAF§f]: §6⚡ SOLD §r{} §7to §e{}§7 for §6{}§7 coins!{}",
-                        item_name, buyer, format_coins(price as i64), profit_str
+                        item_name,
+                        buyer,
+                        format_coins(price as i64),
+                        profit_str
                     );
                     print_mc_chat(&baf_msg);
                     let _ = chat_tx_events.send(baf_msg);
@@ -1252,10 +1484,19 @@ async fn main() -> Result<()> {
                         let purse = bot_client_clone.get_purse();
                         let uuid_str = opt_auction_uuid.clone();
                         tokio::spawn(async move {
-                            frikadellen_baf::webhook::send_webhook_item_sold(
-                                &name, &item, price, &b, opt_profit, opt_buy_price,
-                                opt_time_secs, purse, uuid_str.as_deref(), &url,
-                            ).await;
+                            hungz_flipper::webhook::send_webhook_item_sold(
+                                &name,
+                                &item,
+                                price,
+                                &b,
+                                opt_profit,
+                                opt_buy_price,
+                                opt_time_secs,
+                                purse,
+                                uuid_str.as_deref(),
+                                &url,
+                            )
+                            .await;
                         });
                     }
                     // Query Coflnet for authoritative session profit after each sale.
@@ -1263,7 +1504,9 @@ async fn main() -> Result<()> {
                     // the session window so the tracker stays in sync with Coflnet.
                     // Skip if session is too short for meaningful data (< ~15 min).
                     {
-                        let days = (prev_secs_events as f64 + session_start.elapsed().as_secs_f64()) / SECS_PER_DAY;
+                        let days = (prev_secs_events as f64
+                            + session_start.elapsed().as_secs_f64())
+                            / SECS_PER_DAY;
                         if days >= 0.01 {
                             let ign = ingame_name_for_events.clone();
                             let args = format!("{} {:.4}", ign, days);
@@ -1271,11 +1514,15 @@ async fn main() -> Result<()> {
                             let message = serde_json::json!({
                                 "type": "profit",
                                 "data": data_json
-                            }).to_string();
+                            })
+                            .to_string();
                             let ws = ws_client_for_events.clone();
                             tokio::spawn(async move {
                                 if let Err(e) = ws.send_message(&message).await {
-                                    tracing::warn!("[CoflProfit] Failed to send /cofl profit: {}", e);
+                                    tracing::warn!(
+                                        "[CoflProfit] Failed to send /cofl profit: {}",
+                                        e
+                                    );
                                 }
                             });
                         }
@@ -1295,13 +1542,15 @@ async fn main() -> Result<()> {
                                 let upload_msg = serde_json::json!({
                                     "type": "uploadInventory",
                                     "data": inv_json
-                                }).to_string();
+                                })
+                                .to_string();
                                 let _ = ws_si.send_message(&upload_msg).await;
                             }
                             let msg = serde_json::json!({
                                 "type": "sellinventory",
                                 "data": serde_json::to_string("").unwrap_or_default()
-                            }).to_string();
+                            })
+                            .to_string();
                             if let Err(e) = ws_si.send_message(&msg).await {
                                 tracing::warn!("[SellInventory] Failed to auto-request sellinventory after auction sale: {}", e);
                             } else {
@@ -1310,13 +1559,31 @@ async fn main() -> Result<()> {
                         });
                     }
                 }
-                frikadellen_baf::bot::BotEvent::BazaarOrderPlaced { item_name, amount, price_per_unit, is_buy_order } => {
+                hungz_flipper::bot::BotEvent::BazaarOrderPlaced {
+                    item_name,
+                    amount,
+                    price_per_unit,
+                    is_buy_order,
+                } => {
                     // Track the order for the web panel and profit calculation on collect.
-                    bazaar_tracker_events.add_order(item_name.clone(), amount, price_per_unit, is_buy_order);
-                    let (order_color, order_type) = if is_buy_order { ("§a", "BUY") } else { ("§c", "SELL") };
+                    bazaar_tracker_events.add_order(
+                        item_name.clone(),
+                        amount,
+                        price_per_unit,
+                        is_buy_order,
+                    );
+                    let (order_color, order_type) = if is_buy_order {
+                        ("§a", "BUY")
+                    } else {
+                        ("§c", "SELL")
+                    };
                     let baf_msg = format!(
                         "§f[§4BAF§f]: §6[BZ] {}{}§7 order placed: {}x {} @ §6{}§7 coins/unit",
-                        order_color, order_type, amount, item_name, format_coins_f64(price_per_unit)
+                        order_color,
+                        order_type,
+                        amount,
+                        item_name,
+                        format_coins_f64(price_per_unit)
                     );
                     print_mc_chat(&baf_msg);
                     let _ = chat_tx_events.send(baf_msg);
@@ -1327,19 +1594,33 @@ async fn main() -> Result<()> {
                         let total = price_per_unit * amount as f64;
                         let purse = bot_client_clone.get_purse();
                         tokio::spawn(async move {
-                            frikadellen_baf::webhook::send_webhook_bazaar_order_placed(
-                                &name, &item, amount, price_per_unit, total, is_buy_order, purse, &url,
-                            ).await;
+                            hungz_flipper::webhook::send_webhook_bazaar_order_placed(
+                                &name,
+                                &item,
+                                amount,
+                                price_per_unit,
+                                total,
+                                is_buy_order,
+                                purse,
+                                &url,
+                            )
+                            .await;
                         });
                     }
                 }
-                frikadellen_baf::bot::BotEvent::AuctionListed { item_name, starting_bid, duration_hours } => {
+                hungz_flipper::bot::BotEvent::AuctionListed {
+                    item_name,
+                    starting_bid,
+                    duration_hours,
+                } => {
                     // Reset the idle-inventory timer so the 30-minute failsafe doesn't fire
                     // while items are being actively listed.
                     *last_auction_listed_at_events.lock().unwrap() = Instant::now();
                     let baf_msg = format!(
                         "§f[§4BAF§f]: §a🏷️ BIN listed: §r{} §7@ §6{}§7 coins for §e{}h",
-                        item_name, format_coins(starting_bid as i64), duration_hours
+                        item_name,
+                        format_coins(starting_bid as i64),
+                        duration_hours
                     );
                     print_mc_chat(&baf_msg);
                     let _ = chat_tx_events.send(baf_msg);
@@ -1349,16 +1630,26 @@ async fn main() -> Result<()> {
                         let item = item_name.clone();
                         let purse = bot_client_clone.get_purse();
                         tokio::spawn(async move {
-                            frikadellen_baf::webhook::send_webhook_auction_listed(
-                                &name, &item, starting_bid, duration_hours, purse, &url,
-                            ).await;
+                            hungz_flipper::webhook::send_webhook_auction_listed(
+                                &name,
+                                &item,
+                                starting_bid,
+                                duration_hours,
+                                purse,
+                                &url,
+                            )
+                            .await;
                         });
                     }
                 }
-                frikadellen_baf::bot::BotEvent::AuctionCancelled { item_name, starting_bid } => {
+                hungz_flipper::bot::BotEvent::AuctionCancelled {
+                    item_name,
+                    starting_bid,
+                } => {
                     let baf_msg = format!(
                         "§f[§4BAF§f]: §c❌ Auction cancelled: §r{} §7@ §6{}§7 coins",
-                        item_name, format_coins(starting_bid as i64)
+                        item_name,
+                        format_coins(starting_bid as i64)
                     );
                     print_mc_chat(&baf_msg);
                     let _ = chat_tx_events.send(baf_msg);
@@ -1368,13 +1659,22 @@ async fn main() -> Result<()> {
                         let item = item_name.clone();
                         let purse = bot_client_clone.get_purse();
                         tokio::spawn(async move {
-                            frikadellen_baf::webhook::send_webhook_auction_cancelled(
-                                &name, &item, starting_bid, purse, &url,
-                            ).await;
+                            hungz_flipper::webhook::send_webhook_auction_cancelled(
+                                &name,
+                                &item,
+                                starting_bid,
+                                purse,
+                                &url,
+                            )
+                            .await;
                         });
                     }
                 }
-                frikadellen_baf::bot::BotEvent::BazaarOrderCollected { item_name, is_buy_order, claimed_amount } => {
+                hungz_flipper::bot::BotEvent::BazaarOrderCollected {
+                    item_name,
+                    is_buy_order,
+                    claimed_amount,
+                } => {
                     // Remove from tracker.
                     let order_data = bazaar_tracker_events.remove_order(&item_name, is_buy_order);
                     // Determine the actual quantity collected.  `claimed_amount` is
@@ -1389,42 +1689,84 @@ async fn main() -> Result<()> {
                         // Only record cost for the actually claimed quantity — a partial fill
                         // should not inflate the buy cost with the unfilled remainder.
                         if is_buy_order {
-                            bazaar_tracker_events.record_buy_cost(&item_name, order.price_per_unit, actual_amount);
-                            info!("[BazaarProfit] Recorded buy cost for {} — {} x {:.0} coins/unit",
-                                item_name, actual_amount, order.price_per_unit);
+                            bazaar_tracker_events.record_buy_cost(
+                                &item_name,
+                                order.price_per_unit,
+                                actual_amount,
+                            );
+                            info!(
+                                "[BazaarProfit] Recorded buy cost for {} — {} x {:.0} coins/unit",
+                                item_name, actual_amount, order.price_per_unit
+                            );
 
                             // Auto-sell collected items
                             if actual_amount > 0 {
                                 // If there is an existing open SELL order for this item, cancel it first
                                 // to consolidate the amounts and avoid multiple separate sell orders.
                                 let current_orders = bazaar_tracker_events.get_orders();
-                                let has_existing_sell = current_orders.iter().any(|o| o.item_name.eq_ignore_ascii_case(&item_name) && !o.is_buy_order);
+                                let has_existing_sell = current_orders.iter().any(|o| {
+                                    o.item_name.eq_ignore_ascii_case(&item_name) && !o.is_buy_order
+                                });
                                 if has_existing_sell {
                                     command_queue_clone.enqueue(
-                                        frikadellen_baf::types::CommandType::ManageOrders {
+                                        hungz_flipper::types::CommandType::ManageOrders {
                                             cancel_open: true,
-                                            target_item: Some((item_name.clone(), false))
+                                            target_item: Some((item_name.clone(), false)),
                                         },
-                                        frikadellen_baf::types::CommandPriority::High,
-                                        true
+                                        hungz_flipper::types::CommandPriority::High,
+                                        true,
                                     );
                                     tracing::info!("[BazaarAuto] Cancelling existing sell order for {} to consolidate with newly collected items", item_name);
                                 }
 
-                                command_queue_clone.enqueue(
-                                    frikadellen_baf::types::CommandType::BazaarSellOrder {
-                                        item_name: item_name.clone(),
-                                        item_tag: None,
-                                        amount: actual_amount,
-                                        price_per_unit: 1.0, // Fallback price, bot clicks 'Best Offer -0.1' slot
-                                    },
-                                    frikadellen_baf::types::CommandPriority::High,
-                                    true
-                                );
-                                tracing::info!("[BazaarAuto] Auto-selling collected buy order items: {} x{}", item_name, actual_amount);
+                                // Guard: only enqueue the sell if one isn't already queued/executing
+                                if command_queue_clone.has_bazaar_sell_for_item(&item_name) {
+                                    tracing::info!("[BazaarAuto] Skipping auto-sell for {} — sell order already queued/executing", item_name);
+                                } else {
+                                    command_queue_clone.enqueue(
+                                        hungz_flipper::types::CommandType::BazaarSellOrder {
+                                            item_name: item_name.clone(),
+                                            item_tag: None,
+                                            amount: actual_amount,
+                                            price_per_unit: 1.0, // Fallback price, bot clicks 'Best Offer -0.1' slot
+                                        },
+                                        hungz_flipper::types::CommandPriority::High,
+                                        true,
+                                    );
+                                    tracing::info!(
+                                        "[BazaarAuto] Auto-selling collected buy order items: {} x{}",
+                                        item_name,
+                                        actual_amount
+                                    );
+                                }
                             }
                         }
                     } else {
+                        // No tracked order — items are still in inventory and must be sold.
+                        if is_buy_order {
+                            let sell_amount = claimed_amount.unwrap_or(0);
+                            if sell_amount > 0 {
+                                if command_queue_clone.has_bazaar_sell_for_item(&item_name) {
+                                    tracing::info!("[BazaarAuto] Skipping auto-sell for untracked buy {} — sell order already queued", item_name);
+                                } else {
+                                    command_queue_clone.enqueue(
+                                        hungz_flipper::types::CommandType::BazaarSellOrder {
+                                            item_name: item_name.clone(),
+                                            item_tag: None,
+                                            amount: sell_amount,
+                                            price_per_unit: 1.0, // Fallback price, bot clicks 'Best Offer -0.1' slot
+                                        },
+                                        hungz_flipper::types::CommandPriority::High,
+                                        true,
+                                    );
+                                    tracing::info!(
+                                        "[BazaarAuto] Auto-selling untracked buy order items: {} x{}",
+                                        item_name,
+                                        sell_amount
+                                    );
+                                }
+                            }
+                        }
                         debug!("[BazaarProfit] No tracked order for collected {} {} (may be from a previous session)",
                             if is_buy_order { "BUY" } else { "SELL" }, item_name);
                     }
@@ -1443,29 +1785,152 @@ async fn main() -> Result<()> {
                             let sell_total = sell_order.price_per_unit * actual_amount as f64;
                             let tax = sell_total * (bazaar_tax_rate / 100.0);
                             let sell_after_tax = sell_total - tax;
-                            if let Some((buy_ppu, _buy_amt)) = bazaar_tracker_events.take_buy_cost(&item_name) {
+                            if let Some((buy_ppu, _buy_amt)) =
+                                bazaar_tracker_events.take_buy_cost(&item_name)
+                            {
                                 // Use per-unit buy cost × actual sold quantity, NOT
                                 // buy_ppu × total_buy_amount.  This correctly handles
                                 // partial sells (e.g. sold 21 of 64 bought).
                                 let buy_total = buy_ppu * actual_amount as f64;
                                 let profit = (sell_after_tax - buy_total).round() as i64;
-                                // Session BZ profit is tracked via /cofl bz l (set_bz_total),
-                                // so we don't call record_bz_profit here.
                                 info!("[BazaarProfit] SELL {} — {} units, sell: {:.0}, tax: {:.0} ({:.2}%), buy: {:.0} ({:.0}/ea), profit: {}",
                                     item_name, actual_amount, sell_total, tax, bazaar_tax_rate, buy_total, buy_ppu, profit);
                                 Some(profit)
-                            } else if let Some(bz_list_profit) = bazaar_tracker_events.get_bz_list_profit(&item_name) {
-                                // Fallback: use profit from /cofl bz l for this item
-                                info!("[BazaarProfit] SELL {} — sell: {:.0}, tax: {:.0}, no local buy cost, using /cofl bz l profit: {}",
-                                    item_name, sell_total, tax, bz_list_profit);
-                                Some(bz_list_profit)
                             } else {
-                                // No buy cost recorded and no /cofl bz l data —
-                                // do NOT report sell proceeds as profit (the item
-                                // was not free).
-                                info!("[BazaarProfit] SELL {} — sell: {:.0}, tax: {:.0}, no buy cost or /cofl bz l data, skipping profit",
-                                    item_name, sell_total, tax);
-                                None
+                                // Fallback: fetch real-time buy cost from Coflnet bazaar spread API
+                                // instead of using the delayed /cofl bz l data.
+                                let api_buy_cost: Option<f64> = {
+                                    // Derive an item tag from the item name for matching against
+                                    // the API's itemTag field (e.g. "Enchanted Coal Block" → "ENCHANTED_COAL_BLOCK")
+                                    let derived_tag: Option<String> = {
+                                        let trimmed = item_name.trim();
+                                        if trimmed.is_empty() || trimmed == "Unknown" {
+                                            None
+                                        } else {
+                                            Some(
+                                                trimmed
+                                                    .chars()
+                                                    .map(|c| {
+                                                        if c.is_alphanumeric() {
+                                                            c.to_ascii_uppercase()
+                                                        } else {
+                                                            '_'
+                                                        }
+                                                    })
+                                                    .collect::<String>()
+                                                    .trim_matches('_')
+                                                    .to_string(),
+                                            )
+                                        }
+                                    };
+                                    let item_name_lower = item_name.to_lowercase();
+
+                                    let client = reqwest::Client::builder()
+                                        .user_agent("Mozilla/5.0")
+                                        .timeout(std::time::Duration::from_secs(3))
+                                        .build()
+                                        .unwrap_or_else(|_| reqwest::Client::new());
+
+                                    match client
+                                        .get("https://sky.coflnet.com/api/flip/bazaar/spread")
+                                        .send()
+                                        .await
+                                    {
+                                        Ok(resp) => {
+                                            match resp.json::<serde_json::Value>().await {
+                                                Ok(json) => {
+                                                    if let Some(items) = json.as_array() {
+                                                        // Try to find the item by itemTag first (most reliable),
+                                                        // then fall back to itemName matching.
+                                                        let found = items.iter().find(|entry| {
+                                                            // Match by itemTag
+                                                            if let Some(ref tag) = derived_tag {
+                                                                if let Some(api_tag) = entry
+                                                                    .get("flip")
+                                                                    .and_then(|f| f.get("itemTag"))
+                                                                    .and_then(|t| t.as_str())
+                                                                {
+                                                                    if api_tag == tag {
+                                                                        return true;
+                                                                    }
+                                                                }
+                                                            }
+                                                            // Match by itemName (case-insensitive)
+                                                            if let Some(api_name) = entry
+                                                                .get("itemName")
+                                                                .and_then(|n| n.as_str())
+                                                            {
+                                                                return api_name.to_lowercase()
+                                                                    == item_name_lower;
+                                                            }
+                                                            false
+                                                        });
+
+                                                        found.and_then(|entry| {
+                                                            // Use sellPrice (= current highest buy order price) as the
+                                                            // buy cost estimate, since the bot places buy orders at
+                                                            // approximately this price level.
+                                                            entry
+                                                                .get("flip")
+                                                                .and_then(|f| f.get("sellPrice"))
+                                                                .and_then(|p| p.as_f64())
+                                                        })
+                                                    } else {
+                                                        None
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    tracing::warn!("[BazaarProfit] Failed to parse spread API response: {}", e);
+                                                    None
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "[BazaarProfit] Failed to fetch spread API: {}",
+                                                e
+                                            );
+                                            None
+                                        }
+                                    }
+                                };
+
+                                if let Some(api_buy_ppu) = api_buy_cost {
+                                    let buy_total = api_buy_ppu * actual_amount as f64;
+                                    let profit = (sell_after_tax - buy_total).round() as i64;
+                                    info!("[BazaarProfit] SELL {} — {} units, sell: {:.0}, tax: {:.0} ({:.2}%), buy: {:.0} ({:.0}/ea from spread API), profit: {}",
+                                        item_name, actual_amount, sell_total, tax, bazaar_tax_rate, buy_total, api_buy_ppu, profit);
+                                    Some(profit)
+                                } else if let Some(bz_list_profit) =
+                                    bazaar_tracker_events.get_bz_list_profit(&item_name)
+                                {
+                                    // Secondary fallback: use profit from /cofl bz l for this item
+                                    info!("[BazaarProfit] SELL {} — sell: {:.0}, tax: {:.0}, no local buy cost, spread API miss, using /cofl bz l profit: {}",
+                                        item_name, sell_total, tax, bz_list_profit);
+                                    Some(bz_list_profit)
+                                } else if let Some(recent_buy) = bazaar_tracker_events
+                                    .get_orders()
+                                    .iter()
+                                    .filter(|o| {
+                                        o.is_buy_order
+                                            && o.item_name.eq_ignore_ascii_case(&item_name)
+                                    })
+                                    .max_by_key(|o| o.placed_at)
+                                {
+                                    // Tertiary fallback: try to find a recent buy order for the same item name in the tracker
+                                    let buy_ppu = recent_buy.price_per_unit;
+                                    let buy_total = buy_ppu * actual_amount as f64;
+                                    let profit = (sell_after_tax - buy_total).round() as i64;
+                                    info!("[BazaarProfit] SELL {} — {} units, sell: {:.0}, tax: {:.0} ({:.2}%), buy: {:.0} ({:.0}/ea from active buy order fallback), profit: {}",
+                                        item_name, actual_amount, sell_total, tax, bazaar_tax_rate, buy_total, buy_ppu, profit);
+                                    Some(profit)
+                                } else {
+                                    // No buy cost from any source — do NOT report sell
+                                    // proceeds as profit (the item was not free).
+                                    info!("[BazaarProfit] SELL {} — sell: {:.0}, tax: {:.0}, no buy cost from any source, skipping profit",
+                                        item_name, sell_total, tax);
+                                    None
+                                }
                             }
                         } else {
                             None
@@ -1473,46 +1938,64 @@ async fn main() -> Result<()> {
                     } else {
                         None
                     };
+                    // Record realized BZ profit using our internal tracker
+                    if let Some(profit) = opt_profit {
+                        profit_tracker_events.record_bz_profit(profit);
+                    }
+
                     let order_type = if is_buy_order { "BUY" } else { "SELL" };
-                    info!("[BazaarOrders] Order collected: {} ({}) x{}", item_name, order_type, actual_amount);
+                    info!(
+                        "[BazaarOrders] Order collected: {} ({}) x{}",
+                        item_name, order_type, actual_amount
+                    );
                     // Build the collection message with prices and optional profit.
                     // Use actual_amount (from lore) instead of the tracker's original
                     // order amount so partial fills display correctly (e.g. "1x" not "4x").
                     let price_info = if let Some(ref order) = order_data {
                         let total = order.price_per_unit * actual_amount as f64;
-                        format!(" §7({}x @ §6{}§7 = §6{}§7 coins)",
+                        format!(
+                            " §7({}x @ §6{}§7 = §6{}§7 coins)",
                             actual_amount,
                             format_coins_f64(order.price_per_unit),
-                            format_coins_f64(total))
+                            format_coins_f64(total)
+                        )
                     } else {
                         String::new()
                     };
                     let profit_info = if let Some(profit) = opt_profit {
-                        let (color, sign) = if profit >= 0 { ("§a", "+") } else { ("§c", "") };
+                        let (color, sign) = if profit >= 0 {
+                            ("§a", "+")
+                        } else {
+                            ("§c", "")
+                        };
                         format!(" §7→ {}{}{}§7 profit", color, sign, format_coins(profit))
                     } else {
                         String::new()
                     };
                     let baf_msg = format!(
                         "§f[§4BAF§f]: §a✅ [BZ] {}§7 order collected: §r{}{}{}",
-                        if is_buy_order { "BUY" } else { "SELL" }, item_name, price_info, profit_info
+                        if is_buy_order { "BUY" } else { "SELL" },
+                        item_name,
+                        price_info,
+                        profit_info
                     );
                     print_mc_chat(&baf_msg);
                     let _ = chat_tx_events.send(baf_msg);
                     // Send bazaar legendary flip to public channel (100M+ profit on SELL)
                     if !is_buy_order {
                         if let Some(profit) = opt_profit {
-                            if profit >= frikadellen_baf::webhook::LEGENDARY_PROFIT_THRESHOLD as i64 {
+                            if profit >= hungz_flipper::webhook::LEGENDARY_PROFIT_THRESHOLD as i64 {
                                 let item_for_channel = item_name.clone();
                                 let channel_amount = actual_amount;
                                 let opt_ppu = order_data.as_ref().map(|o| o.price_per_unit);
                                 tokio::spawn(async move {
-                                    frikadellen_baf::webhook::send_webhook_bazaar_flip_channel(
+                                    hungz_flipper::webhook::send_webhook_bazaar_flip_channel(
                                         &item_for_channel,
                                         channel_amount,
                                         opt_ppu.unwrap_or(0.0),
                                         profit,
-                                    ).await;
+                                    )
+                                    .await;
                                 });
                             }
                         }
@@ -1528,14 +2011,24 @@ async fn main() -> Result<()> {
                         // parsing) and the tracker had no data — fall back to the
                         // tracker's original order amount so the webhook still
                         // shows *something* rather than "0x".
-                        let webhook_amount = if actual_amount > 0 { Some(actual_amount) } else { order_data.as_ref().map(|o| o.amount) };
+                        let webhook_amount = if actual_amount > 0 {
+                            Some(actual_amount)
+                        } else {
+                            order_data.as_ref().map(|o| o.amount)
+                        };
                         let opt_ppu = order_data.as_ref().map(|o| o.price_per_unit);
                         tokio::spawn(async move {
-                            frikadellen_baf::webhook::send_webhook_bazaar_order_collected(
-                                &name, &item, is_buy_order,
-                                webhook_amount, opt_ppu,
-                                opt_profit, purse, &url,
-                            ).await;
+                            hungz_flipper::webhook::send_webhook_bazaar_order_collected(
+                                &name,
+                                &item,
+                                is_buy_order,
+                                webhook_amount,
+                                opt_ppu,
+                                opt_profit,
+                                purse,
+                                &url,
+                            )
+                            .await;
                         });
                     }
                     // After collecting a SELL order, request `/cofl bz h` for
@@ -1547,15 +2040,20 @@ async fn main() -> Result<()> {
                         let ss_bz_h = session_start;
                         let prev_bz_h = prev_secs_events;
                         tokio::spawn(async move {
-                            tokio::time::sleep(tokio::time::Duration::from_secs(BZ_LIST_REQUEST_DELAY_SECS + BZ_PROFIT_QUERY_EXTRA_DELAY_SECS)).await;
-                            let days = (prev_bz_h as f64 + ss_bz_h.elapsed().as_secs_f64()) / SECS_PER_DAY;
+                            tokio::time::sleep(tokio::time::Duration::from_secs(
+                                BZ_LIST_REQUEST_DELAY_SECS + BZ_PROFIT_QUERY_EXTRA_DELAY_SECS,
+                            ))
+                            .await;
+                            let days =
+                                (prev_bz_h as f64 + ss_bz_h.elapsed().as_secs_f64()) / SECS_PER_DAY;
                             if days >= 0.01 {
                                 let args = format!("h {} {:.4}", ign_bz_h, days);
                                 let data_json = serde_json::json!(args).to_string();
                                 let message = serde_json::json!({
                                     "type": "bz",
                                     "data": data_json
-                                }).to_string();
+                                })
+                                .to_string();
                                 if let Err(e) = ws_bz_h.send_message(&message).await {
                                     tracing::warn!("[CoflBzH] Failed to send /cofl bz h after SELL collect: {}", e);
                                 } else {
@@ -1565,7 +2063,11 @@ async fn main() -> Result<()> {
                         });
                     }
                 }
-                frikadellen_baf::bot::BotEvent::BazaarOrderCancelled { item_name, is_buy_order, already_collected } => {
+                hungz_flipper::bot::BotEvent::BazaarOrderCancelled {
+                    item_name,
+                    is_buy_order,
+                    already_collected,
+                } => {
                     // When already_collected is true, a BazaarOrderCollected event
                     // already removed this order from the tracker (partial collect
                     // followed by cancel of the unfilled remainder).  Calling
@@ -1577,7 +2079,10 @@ async fn main() -> Result<()> {
                         None
                     };
                     let order_type = if is_buy_order { "BUY" } else { "SELL" };
-                    info!("[BazaarOrders] Order cancelled: {} ({})", item_name, order_type);
+                    info!(
+                        "[BazaarOrders] Order cancelled: {} ({})",
+                        item_name, order_type
+                    );
                     // Include amount and price in the cancel message so the user knows
                     // exactly which order was cancelled, not just the item name.
                     let detail_str = if let Some(ref order) = order_data {
@@ -1589,14 +2094,14 @@ async fn main() -> Result<()> {
                                     tracing::info!("[BazaarAuto] Skipping auto-resell for {} because a SellOrder is already queued (assumed combined)", item_name);
                                 } else {
                                     command_queue_clone.enqueue(
-                                        frikadellen_baf::types::CommandType::BazaarSellOrder {
+                                        hungz_flipper::types::CommandType::BazaarSellOrder {
                                             item_name: item_name.clone(),
                                             item_tag: None,
                                             amount: order.amount,
                                             price_per_unit: order.price_per_unit, // Fallback price, bot clicks 'Best Offer -0.1' slot
                                         },
-                                        frikadellen_baf::types::CommandPriority::Normal,
-                                        true
+                                        hungz_flipper::types::CommandPriority::Normal,
+                                        true,
                                     );
                                     tracing::info!("[BazaarAuto] Auto-reselling cancelled sell order items: {} x{}", item_name, order.amount);
                                 }
@@ -1605,35 +2110,42 @@ async fn main() -> Result<()> {
                             // We cancelled a BUY order (likely outbid). We should re-buy the remaining amount!
                             if order.amount > 0 {
                                 let pending = command_queue_clone.get_bazaar_buy_orders_in_queue();
-                                if pending.iter().any(|(n, _cost)| n.eq_ignore_ascii_case(&item_name)) {
+                                if pending
+                                    .iter()
+                                    .any(|(n, _cost)| n.eq_ignore_ascii_case(&item_name))
+                                {
                                     tracing::info!("[BazaarAuto] Skipping auto-rebuy for {} because a BuyOrder is already queued (assumed combined)", item_name);
                                 } else {
                                     command_queue_clone.enqueue(
-                                        frikadellen_baf::types::CommandType::BazaarBuyOrder {
+                                        hungz_flipper::types::CommandType::BazaarBuyOrder {
                                             item_name: item_name.clone(),
                                             item_tag: None,
                                             amount: order.amount, // re-buy what was left
                                             price_per_unit: order.price_per_unit, // Fallback price, bot clicks 'Top Order +0.1' slot
                                         },
-                                        frikadellen_baf::types::CommandPriority::Normal,
-                                        true
+                                        hungz_flipper::types::CommandPriority::Normal,
+                                        true,
                                     );
                                     tracing::info!("[BazaarAuto] Auto-rebuying cancelled buy order items: {} x{}", item_name, order.amount);
                                 }
                             }
                         }
-                        
+
                         let total = order.price_per_unit * order.amount as f64;
-                        format!(" §7({}x @ §6{}§7 = §6{}§7 coins)",
+                        format!(
+                            " §7({}x @ §6{}§7 = §6{}§7 coins)",
                             order.amount,
                             format_coins_f64(order.price_per_unit),
-                            format_coins_f64(total))
+                            format_coins_f64(total)
+                        )
                     } else {
                         String::new()
                     };
                     let baf_msg = format!(
                         "§f[§4BAF§f]: §c🚫 [BZ] {}§7 order cancelled: §r{}{}",
-                        if is_buy_order { "BUY" } else { "SELL" }, item_name, detail_str
+                        if is_buy_order { "BUY" } else { "SELL" },
+                        item_name,
+                        detail_str
                     );
                     print_mc_chat(&baf_msg);
                     let _ = chat_tx_events.send(baf_msg);
@@ -1645,13 +2157,23 @@ async fn main() -> Result<()> {
                         let opt_amount = order_data.as_ref().map(|o| o.amount);
                         let opt_ppu = order_data.as_ref().map(|o| o.price_per_unit);
                         tokio::spawn(async move {
-                            frikadellen_baf::webhook::send_webhook_bazaar_order_cancelled(
-                                &name, &item, is_buy_order, opt_amount, opt_ppu, purse, &url,
-                            ).await;
+                            hungz_flipper::webhook::send_webhook_bazaar_order_cancelled(
+                                &name,
+                                &item,
+                                is_buy_order,
+                                opt_amount,
+                                opt_ppu,
+                                purse,
+                                &url,
+                            )
+                            .await;
                         });
                     }
                 }
-                frikadellen_baf::bot::BotEvent::BazaarOrderFilled { item_name, is_buy_order } => {
+                hungz_flipper::bot::BotEvent::BazaarOrderFilled {
+                    item_name,
+                    is_buy_order,
+                } => {
                     // Mark the order as filled in the tracker so the periodic timer
                     // can skip ManageOrders when nothing needs collection.
                     if !item_name.is_empty() {
@@ -1669,31 +2191,43 @@ async fn main() -> Result<()> {
                         let prev_secs = prev_secs_events;
                         tokio::spawn(async move {
                             // Small delay to let Coflnet register the completed flip.
-                            tokio::time::sleep(tokio::time::Duration::from_secs(BZ_LIST_REQUEST_DELAY_SECS)).await;
+                            tokio::time::sleep(tokio::time::Duration::from_secs(
+                                BZ_LIST_REQUEST_DELAY_SECS,
+                            ))
+                            .await;
                             let data_json = serde_json::json!("l").to_string();
                             let message = serde_json::json!({
                                 "type": "bz",
                                 "data": data_json
-                            }).to_string();
+                            })
+                            .to_string();
                             if let Err(e) = ws.send_message(&message).await {
                                 tracing::warn!("[BZList] Failed to send /cofl bz l: {}", e);
                             } else {
-                                tracing::info!("[BZList] Auto-requested /cofl bz l after SELL fill");
+                                tracing::info!(
+                                    "[BZList] Auto-requested /cofl bz l after SELL fill"
+                                );
                             }
                             // Also request `/cofl bz h <ign> <days>` for authoritative
                             // BZ session profit (same as AH `/cofl profit`).
-                            let days = (prev_secs as f64 + ss.elapsed().as_secs_f64()) / SECS_PER_DAY;
+                            let days =
+                                (prev_secs as f64 + ss.elapsed().as_secs_f64()) / SECS_PER_DAY;
                             if days >= 0.01 {
                                 let args = format!("h {} {:.4}", ign, days);
                                 let data_json = serde_json::json!(args).to_string();
                                 let message = serde_json::json!({
                                     "type": "bz",
                                     "data": data_json
-                                }).to_string();
+                                })
+                                .to_string();
                                 if let Err(e) = ws2.send_message(&message).await {
                                     tracing::warn!("[CoflBzH] Failed to send /cofl bz h: {}", e);
                                 } else {
-                                    tracing::info!("[CoflBzH] Auto-requested /cofl bz h {} {:.4}", ign, days);
+                                    tracing::info!(
+                                        "[CoflBzH] Auto-requested /cofl bz h {} {:.4}",
+                                        ign,
+                                        days
+                                    );
                                 }
                             }
                         });
@@ -1717,14 +2251,17 @@ async fn main() -> Result<()> {
                         } else {
                             info!("[BazaarOrders] Order filled — queuing ManageOrders");
                             command_queue_clone.enqueue(
-                                frikadellen_baf::types::CommandType::ManageOrders { cancel_open: false, target_item: None },
-                                frikadellen_baf::types::CommandPriority::High,
+                                hungz_flipper::types::CommandType::ManageOrders {
+                                    cancel_open: false,
+                                    target_item: None,
+                                },
+                                hungz_flipper::types::CommandPriority::High,
                                 true,
                             );
                         }
                     }
                 }
-                frikadellen_baf::bot::BotEvent::BazaarOrdersSnapshot { ingame_orders } => {
+                hungz_flipper::bot::BotEvent::BazaarOrdersSnapshot { ingame_orders } => {
                     // Reconcile the tracker with the orders actually visible
                     // in the Bazaar Orders window so the web GUI stays in sync.
                     let removed = bazaar_tracker_events.reconcile_with_ingame(&ingame_orders);
@@ -1747,7 +2284,6 @@ async fn main() -> Result<()> {
     let cofl_premium_ws = cofl_premium.clone();
     let enable_ah_flips_ws = enable_ah_flips.clone();
     let enable_bazaar_flips_ws = enable_bazaar_flips.clone();
-    let bz_blacklisted_items_ws = bz_blacklisted_items.clone();
     let flip_intake_paused_ws = flip_intake_paused.clone();
     let chat_tx_ws = chat_tx.clone();
     let detected_cofl_license_ws = detected_cofl_license.clone();
@@ -1766,14 +2302,15 @@ async fn main() -> Result<()> {
     // for per-order profit when local buy-cost tracking has no data.
     let bz_list_items: Arc<std::sync::Mutex<std::collections::HashMap<String, (i64, u32)>>> =
         Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
-    
-    let deferred_manage_orders: Arc<std::sync::Mutex<Vec<frikadellen_baf::types::CommandType>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    let deferred_manage_orders: Arc<std::sync::Mutex<Vec<hungz_flipper::types::CommandType>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
     let deferred_manage_orders_proc = deferred_manage_orders.clone();
     let deferred_manage_orders_resume = deferred_manage_orders.clone();
 
     tokio::spawn(async move {
-        use frikadellen_baf::websocket::CoflEvent;
-        use frikadellen_baf::types::{CommandType, CommandPriority};
+        use hungz_flipper::types::{CommandPriority, CommandType};
+        use hungz_flipper::websocket::CoflEvent;
 
         while let Some(event) = ws_rx.recv().await {
             match event {
@@ -1785,13 +2322,19 @@ async fn main() -> Result<()> {
 
                     // Skip if the web panel's Disconnect button paused intake.
                     if flip_intake_paused_ws.load(Ordering::Relaxed) {
-                        debug!("Skipping AH flip — intake paused (Disconnect): {}", flip.item_name);
+                        debug!(
+                            "Skipping AH flip — intake paused (Disconnect): {}",
+                            flip.item_name
+                        );
                         continue;
                     }
 
                     // Block flips until Coflnet auth is confirmed
                     if !cofl_authenticated_ws.load(Ordering::Relaxed) {
-                        debug!("Skipping flip — Coflnet not yet authenticated: {}", flip.item_name);
+                        debug!(
+                            "Skipping flip — Coflnet not yet authenticated: {}",
+                            flip.item_name
+                        );
                         continue;
                     }
 
@@ -1805,13 +2348,20 @@ async fn main() -> Result<()> {
 
                     // Skip if in startup/claiming state - use bot_client state (authoritative source)
                     if !bot_client_for_ws.state().allows_commands() {
-                        debug!("Skipping flip — bot busy ({:?}): {}", bot_client_for_ws.state(), flip.item_name);
+                        debug!(
+                            "Skipping flip — bot busy ({:?}): {}",
+                            bot_client_for_ws.state(),
+                            flip.item_name
+                        );
                         continue;
                     }
 
                     // Skip AH flips when inventory is full — selling mode
                     if bot_client_for_ws.is_inventory_full() {
-                        debug!("Skipping AH flip — inventory full (selling mode): {}", flip.item_name);
+                        debug!(
+                            "Skipping AH flip — inventory full (selling mode): {}",
+                            flip.item_name
+                        );
                         continue;
                     }
 
@@ -1829,7 +2379,8 @@ async fn main() -> Result<()> {
 
                     // Store flip in tracker so ItemPurchased / ItemSold webhooks can include profit
                     {
-                        let key = frikadellen_baf::utils::remove_minecraft_colors(&flip.item_name).to_lowercase();
+                        let key = hungz_flipper::utils::remove_minecraft_colors(&flip.item_name)
+                            .to_lowercase();
                         if let Ok(mut tracker) = flip_tracker_ws.lock() {
                             let now = Instant::now();
                             tracker.insert(key, (flip.clone(), 0, now, now));
@@ -1850,34 +2401,40 @@ async fn main() -> Result<()> {
                     // Ignored directly via websocket, processing from in-game chat instead as requested.
                 }
                 CoflEvent::ChatMessage(msg) => {
-                    let clean = frikadellen_baf::utils::remove_minecraft_colors(&msg);
+                    let clean = hungz_flipper::utils::remove_minecraft_colors(&msg);
 
                     // Parse Coflnet undercut/outbid messages
                     // Example: "[Coflnet]: Your sell-order for 160x Jacob's Ticket has been undercut by an order of 64x at 54,755.6 per unit (-0.1)."
                     // Example: "[Coflnet]: Your buy-order for 123x Diamond has been outbid by an order of 1x at 123.4 per unit (+0.1)."
-                    if clean.contains("[Coflnet]: Your ") && (clean.contains(" has been undercut by ") || clean.contains(" has been outbid by ")) {
+                    if clean.contains("[Coflnet]: Your ")
+                        && (clean.contains(" has been undercut by ")
+                            || clean.contains(" has been outbid by "))
+                    {
                         let is_buy_order = clean.contains("buy-order");
                         if let Some(for_idx) = clean.find(" for ") {
                             if let Some(has_idx) = clean.find(" has been ") {
                                 let target_text = clean[for_idx + 5..has_idx].trim(); // e.g. "160x Jacob's Ticket"
-                                // Remove prefix like "160x "
+                                                                                      // Remove prefix like "160x "
                                 let item_name = if let Some(space_idx) = target_text.find("x ") {
                                     target_text[space_idx + 2..].trim().to_string()
                                 } else {
                                     target_text.to_string()
                                 };
-                                tracing::info!("[Coflnet] Order undercut/outbid detected for: {}", item_name);
-                                
+                                tracing::info!(
+                                    "[Coflnet] Order undercut/outbid detected for: {}",
+                                    item_name
+                                );
+
                                 // Cancel the order so it can be re-created
                                 // ManageOrders with target_item will scan order pages and cancel
                                 // specifically this order if it hasn't filled.  When it cancels, it
                                 // triggers the regular "Bazaar Order Cancelled" which queues a rebuild.
                                 command_queue_clone.enqueue(
-                                    frikadellen_baf::types::CommandType::ManageOrders {
+                                    hungz_flipper::types::CommandType::ManageOrders {
                                         cancel_open: true,
                                         target_item: Some((item_name, is_buy_order)),
                                     },
-                                    frikadellen_baf::types::CommandPriority::High,
+                                    hungz_flipper::types::CommandPriority::High,
                                     false,
                                 );
                             }
@@ -1887,9 +2444,8 @@ async fn main() -> Result<()> {
                     // Parse "Your connection id is XXXX" (from chatMessage, matches TypeScript BAF.ts)
                     if let Some(cap) = msg.find("Your connection id is ") {
                         let rest = &msg[cap + "Your connection id is ".len()..];
-                        let conn_id: String = rest.chars()
-                            .take_while(|c| c.is_ascii_hexdigit())
-                            .collect();
+                        let conn_id: String =
+                            rest.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
                         if conn_id.len() == 32 {
                             info!("[Coflnet] Connection ID: {}", conn_id);
                             if let Ok(mut g) = cofl_connection_id_ws.lock() {
@@ -1907,7 +2463,9 @@ async fn main() -> Result<()> {
                         if let Some(hello_pos) = msg.find("Hello ") {
                             let after_hello = &msg[hello_pos..];
                             // Expect "(…@…)" somewhere after "Hello "
-                            if let (Some(open), Some(close)) = (after_hello.find('('), after_hello.find(')')) {
+                            if let (Some(open), Some(close)) =
+                                (after_hello.find('('), after_hello.find(')'))
+                            {
                                 if open < close && after_hello[open..close].contains('@') {
                                     info!("[Coflnet] Authentication confirmed — flips enabled");
                                     cofl_authenticated_ws.store(true, Ordering::Relaxed);
@@ -1925,7 +2483,8 @@ async fn main() -> Result<()> {
                         if let Some(until_pos) = rest.find(" until ") {
                             let tier = rest[..until_pos].trim().to_string();
                             let expires_raw = &rest[until_pos + " until ".len()..];
-                            let expires: String = expires_raw.chars()
+                            let expires: String = expires_raw
+                                .chars()
                                 .take_while(|&c| c != '\n' && c != '\\')
                                 .collect();
                             let expires = expires.trim().to_string();
@@ -1944,7 +2503,7 @@ async fn main() -> Result<()> {
                     // `/cofl license default <current_ign>` so the user's default
                     // account tier is applied to the current account.
                     if !license_default_sent_ws.load(Ordering::Relaxed) {
-                        let clean_msg = frikadellen_baf::utils::remove_minecraft_colors(&msg);
+                        let clean_msg = hungz_flipper::utils::remove_minecraft_colors(&msg);
                         if clean_msg.contains("don't have a license for") {
                             license_default_sent_ws.store(true, Ordering::Relaxed);
                             let ws = ws_client_clone.clone();
@@ -1971,7 +2530,7 @@ async fn main() -> Result<()> {
                     // as a fallback profit source when local buy-cost tracking has
                     // no data for a sell.
                     {
-                        let clean = frikadellen_baf::utils::remove_minecraft_colors(&msg);
+                        let clean = hungz_flipper::utils::remove_minecraft_colors(&msg);
                         if clean.contains("Last Completed Bazaar Flips") {
                             // Header line — reset the accumulators.
                             if let Ok(mut acc) = bz_list_accum.lock() {
@@ -1982,7 +2541,9 @@ async fn main() -> Result<()> {
                             }
                         } else if let Some(profit) = parse_bz_list_flip_profit(&clean) {
                             // Also parse per-item detail for fallback profit lookup.
-                            if let Some((item_name, item_profit, flip_count)) = parse_bz_list_flip_detail(&clean) {
+                            if let Some((item_name, item_profit, flip_count)) =
+                                parse_bz_list_flip_detail(&clean)
+                            {
                                 if let Ok(mut items) = bz_list_items.lock() {
                                     let entry = items.entry(item_name).or_insert((0, 0));
                                     entry.0 += item_profit;
@@ -2006,17 +2567,24 @@ async fn main() -> Result<()> {
                                 let items_clone = bz_list_items.clone();
                                 let tracker = bazaar_tracker_ws.clone();
                                 let tx = chat_tx_ws.clone();
-                                let pt = profit_tracker_ws.clone();
+                                let _pt = profit_tracker_ws.clone();
                                 tokio::spawn(async move {
                                     // Wait for the full list to arrive.
-                                    tokio::time::sleep(tokio::time::Duration::from_secs(BZ_LIST_DEBOUNCE_SECS)).await;
+                                    tokio::time::sleep(tokio::time::Duration::from_secs(
+                                        BZ_LIST_DEBOUNCE_SECS,
+                                    ))
+                                    .await;
                                     if let Ok(acc) = accum.lock() {
                                         let (total, count, _) = *acc;
                                         if count > 0 {
                                             // We no longer rely on `/cofl bz l` for authoritative total profit;
                                             // we rely exclusively on `/cofl bz h` (Bazaar Profit History).
                                             tracing::info!("[BZList] Parsed BZ profit from /cofl bz l: {} coins ({} flips), leaving session total unchanged here", total, count);
-                                            let (color, sign) = if total >= 0 { ("§a", "+") } else { ("§c", "") };
+                                            let (color, sign) = if total >= 0 {
+                                                ("§a", "+")
+                                            } else {
+                                                ("§c", "")
+                                            };
                                             let summary = format!(
                                                 "§f[§4BAF§f]: §6[BZ List] §7{} flips, total profit: {}{}{}",
                                                 count, color, sign, format_coins(total)
@@ -2030,189 +2598,17 @@ async fn main() -> Result<()> {
                                     if let Ok(items) = items_clone.lock() {
                                         if !items.is_empty() {
                                             tracker.set_bz_list_profits(items.clone());
-                                            tracing::debug!("[BZList] Stored per-item profits for {} items", items.len());
+                                            tracing::debug!(
+                                                "[BZList] Stored per-item profits for {} items",
+                                                items.len()
+                                            );
                                         }
                                     }
                                 });
                             }
                         }
                     }
-                    // Try to parse the Coflnet chat message as a bazaar flip recommendation.
-                    // Coflnet may send flip recommendations as chat messages (e.g.
-                    // "Recommending sell order: 2x Item at 30.1K per unit(1)") without a
-                    // corresponding structured `bazaarFlip` WebSocket message.
-                    if enable_bazaar_flips_ws.load(Ordering::Relaxed)
-                        && cofl_authenticated_ws.load(Ordering::Relaxed)
-                        && !bazaar_flips_paused_ws.load(Ordering::Relaxed)
-                        && !flip_intake_paused_ws.load(Ordering::Relaxed)
-                    {
-                        if let Ok(Some(rec)) = frikadellen_baf::handlers::BazaarFlipHandler::parse_bazaar_flip_message(&msg) {
-                            let bot_state = bot_client_for_ws.state();
-                            if !matches!(bot_state, frikadellen_baf::types::BotState::Startup) {
-                                let effective_is_buy = rec.effective_is_buy_order();
-
-                                // Gate checks that only apply to BUY orders.
-                                // SELL orders bypass these because they empty
-                                // inventory and must not be silently dropped.
-                                if effective_is_buy && bot_client_for_ws.is_bazaar_at_limit() {
-                                    debug!("Skipping BUY bazaar flip from chat — at order limit: {}", rec.item_name);
-                                } else if bot_client_for_ws.is_bazaar_daily_limit() {
-                                    debug!("Skipping bazaar flip from chat — daily sell value limit reached: {}", rec.item_name);
-                                } else if effective_is_buy && bot_client_for_ws.is_inventory_full() {
-                                    debug!("Skipping BUY bazaar flip from chat — inventory full: {}", rec.item_name);
-                                } else if effective_is_buy && bazaar_tracker_ws.has_filled_orders() {
-                                    debug!("Skipping BUY bazaar flip from chat — filled orders pending: {}", rec.item_name);
-                                } else {
-                                    let mut skip = false;
-                                    
-                                    // Also check blacklist (failed requirements)
-                                    if bz_blacklisted_items_ws.lock().await.contains(&rec.item_name.to_lowercase()) {
-                                        debug!("Skipping BUY bazaar flip from chat — item blacklisted (failed requirements): {}", rec.item_name);
-                                        skip = true;
-                                    }
-
-                                    let mut existing_buy_amount = 0;
-                                    let mut existing_sell_amount = 0;
-                                    if !skip {
-                                        if effective_is_buy {
-                                            let is_pending = command_queue_clone.get_bazaar_buy_orders_in_queue().iter().any(|(n, _cost)| n.eq_ignore_ascii_case(&rec.item_name));
-                                            if is_pending {
-                                                debug!("Skipping BUY bazaar flip from chat — already pending in queue: {}", rec.item_name);
-                                                skip = true;
-                                            } else {
-                                                // Check if there is an active order to consolidate
-                                                existing_buy_amount = bazaar_tracker_ws.get_orders().iter()
-                                                    .filter(|o| o.item_name.eq_ignore_ascii_case(&rec.item_name) && o.is_buy_order && o.status != "filled")
-                                                    .map(|o| o.amount)
-                                                    .sum();
-                                            }
-                                        } else {
-                                            let is_pending = command_queue_clone.get_bazaar_sell_orders_in_queue().iter().any(|n| n.eq_ignore_ascii_case(&rec.item_name));
-                                            if is_pending {
-                                                debug!("Skipping SELL bazaar flip from chat — already pending in queue: {}", rec.item_name);
-                                                skip = true;
-                                            } else {
-                                                // Check if there is an active order to consolidate
-                                                existing_sell_amount = bazaar_tracker_ws.get_orders().iter()
-                                                    .filter(|o| o.item_name.eq_ignore_ascii_case(&rec.item_name) && !o.is_buy_order && o.status != "filled")
-                                                    .map(|o| o.amount)
-                                                    .sum();
-                                            }
-                                        }
-                                    }
-
-                                    if !skip {
-                                        // Cap BUY amounts for unstackable items (e.g. Enchanted Books)
-                                        let mut order_amount = if effective_is_buy
-                                            && frikadellen_baf::utils::is_unstackable_item(
-                                                &rec.item_name,
-                                                rec.item_tag.as_deref(),
-                                            )
-                                        {
-                                            let empty = bot_client_for_ws.empty_slot_count() as u64;
-                                            let max_buy = empty.saturating_sub(2);
-                                            if max_buy == 0 {
-                                                debug!("Skipping unstackable BUY from chat — not enough space ({} empty): {}", empty, rec.item_name);
-                                                skip = true;
-                                                0
-                                            } else {
-                                                let capped = rec.amount.min(max_buy);
-                                                if capped < rec.amount {
-                                                    info!(
-                                                        "[BazaarFlips] Capping unstackable BUY amount {} → {} (chat): {}",
-                                                        rec.amount, capped, rec.item_name
-                                                    );
-                                                }
-                                                capped
-                                            }
-                                        } else {
-                                            rec.amount
-                                        };
-
-                                        if !skip {
-                                            if effective_is_buy && existing_buy_amount > 0 {
-                                                tracing::info!("[BazaarFlips] Consolidating existing buy order (+{}) with new order (+{}) for {}", existing_buy_amount, order_amount, rec.item_name);
-                                                order_amount += existing_buy_amount;
-                                            } else if !effective_is_buy && existing_sell_amount > 0 {
-                                                tracing::info!("[BazaarFlips] Consolidating existing sell order (+{}) with new order (+{}) for {}", existing_sell_amount, order_amount, rec.item_name);
-                                                order_amount += existing_sell_amount;
-                                            }
-
-                                            let (order_color, order_label) = if effective_is_buy { ("§a", "BUY") } else { ("§c", "SELL") };
-                                            let baf_msg = format!(
-                                                "§f[§4BAF§f]: §6[BZ] {}{}§7 order: §r{}§r §7x{} @ §6{}§7 coins/unit",
-                                                order_color, order_label,
-                                                rec.item_name,
-                                                order_amount,
-                                                format_coins_f64(rec.price_per_unit)
-                                            );
-                                            print_mc_chat(&baf_msg);
-                                            let _ = chat_tx_ws.send(baf_msg);
-
-                                            let priority = if effective_is_buy {
-                                                CommandPriority::Normal
-                                            } else {
-                                                CommandPriority::Critical
-                                            };
-                                            
-                                            // Ensure existing open orders are cancelled before creating the new consolidated one.
-                                            // Handle both BUY and SELL sides here.
-                                            if effective_is_buy && existing_buy_amount > 0 {
-                                                command_queue_clone.enqueue(
-                                                    CommandType::ManageOrders {
-                                                        cancel_open: true,
-                                                        target_item: Some((rec.item_name.clone(), true)), // true = buy order
-                                                    },
-                                                    priority,
-                                                    true
-                                                );
-                                            } else if !effective_is_buy && existing_sell_amount > 0 {
-                                                 command_queue_clone.enqueue(
-                                                    CommandType::ManageOrders {
-                                                        cancel_open: true,
-                                                        target_item: Some((rec.item_name.clone(), false)), // false = sell order
-                                                    },
-                                                    priority,
-                                                    true
-                                                );
-                                            }
-
-                                            let command_type = if effective_is_buy {
-                                                CommandType::BazaarBuyOrder {
-                                                    item_name: rec.item_name.clone(),
-                                                    item_tag: rec.item_tag.clone(),
-                                                    amount: order_amount,
-                                                    price_per_unit: rec.price_per_unit,
-                                                }
-                                            } else {
-                                                CommandType::BazaarSellOrder {
-                                                    item_name: rec.item_name.clone(),
-                                                    item_tag: rec.item_tag.clone(),
-                                                    amount: order_amount,
-                                                    price_per_unit: rec.price_per_unit,
-                                                }
-                                            };
-
-                                            command_queue_clone.enqueue(command_type, priority, true);
-                                            info!("[BazaarFlips] Queued {} order from chat message: {} x{} @ {:.0}",
-                                                order_label, rec.item_name, rec.amount, rec.price_per_unit);
-
-                                            // When at the bazaar order limit and we just queued a SELL
-                                            // order, pre-queue a ManageOrders run to free a slot.
-                                            if bot_client_for_ws.is_bazaar_at_limit() && !effective_is_buy && !command_queue_clone.has_manage_orders() {
-                                                info!("[BazaarFlips] At order limit with SELL queued (chat) — pre-queuing ManageOrders to free a slot");
-                                                command_queue_clone.enqueue(
-                                                    CommandType::ManageOrders { cancel_open: false, target_item: None },
-                                                    CommandPriority::High,
-                                                    true
-                                                );
-                                            }
-                                        }
-                                    }
-                                } // end gate checks
-                            }
-                        }
-                    }
+                    // (Bazaar flip recommendations via Coflnet chat messages removed as requested)
                     // Display COFL chat messages with proper color formatting
                     // These are informational messages and should NOT be sent to Hypixel server
                     if config_clone.use_cofl_chat {
@@ -2227,7 +2623,7 @@ async fn main() -> Result<()> {
                 }
                 CoflEvent::Command(cmd) => {
                     info!("Received command from Coflnet: {}", cmd);
-                    
+
                     // Check if this is a /cofl or /baf command that should be sent back to websocket
                     // Match TypeScript consoleHandler.ts - parse and route commands properly
                     let lowercase_cmd = cmd.trim().to_lowercase();
@@ -2237,7 +2633,7 @@ async fn main() -> Result<()> {
                         if parts.len() > 1 {
                             let command = parts[1].to_string(); // Clone to own the data
                             let args = parts[2..].join(" ");
-                            
+
                             // Send to websocket with command as type (JSON-stringified data)
                             let ws = ws_client_clone.clone();
                             let inv_client = bot_client_for_ws.clone();
@@ -2251,7 +2647,8 @@ async fn main() -> Result<()> {
                                         let upload_msg = serde_json::json!({
                                             "type": "uploadInventory",
                                             "data": inv_json
-                                        }).to_string();
+                                        })
+                                        .to_string();
                                         if let Err(e) = ws.send_message(&upload_msg).await {
                                             error!("[Inventory] sellinventory: failed to pre-upload inventory: {}", e);
                                         }
@@ -2260,12 +2657,14 @@ async fn main() -> Result<()> {
                                     }
                                 }
 
-                                let data_json = serde_json::to_string(&args).unwrap_or_else(|_| "\"\"".to_string());
+                                let data_json = serde_json::to_string(&args)
+                                    .unwrap_or_else(|_| "\"\"".to_string());
                                 let message = serde_json::json!({
                                     "type": command,
                                     "data": data_json
-                                }).to_string();
-                                
+                                })
+                                .to_string();
+
                                 if let Err(e) = ws.send_message(&message).await {
                                     error!("Failed to send /cofl command to websocket: {}", e);
                                 } else {
@@ -2292,12 +2691,16 @@ async fn main() -> Result<()> {
                     info!("COFL requested getInventory — sending cached inventory");
                     if let Some(inv_json) = bot_client_for_ws.get_cached_inventory_json() {
                         let payload_bytes = inv_json.len();
-                        debug!("[Inventory] Uploading to COFL: payload {} bytes", payload_bytes);
+                        debug!(
+                            "[Inventory] Uploading to COFL: payload {} bytes",
+                            payload_bytes
+                        );
                         info!("[Inventory] uploadInventory payload: {}", inv_json);
                         let message = serde_json::json!({
                             "type": "uploadInventory",
                             "data": inv_json
-                        }).to_string();
+                        })
+                        .to_string();
                         let ws = ws_client_clone.clone();
                         tokio::spawn(async move {
                             if let Err(e) = ws.send_message(&message).await {
@@ -2343,7 +2746,10 @@ async fn main() -> Result<()> {
                             let duration = auction_data.get("duration").and_then(|v| v.as_u64());
                             // Also extract slot (mineflayer inventory slot 9-44) and id
                             let item_slot = auction_data.get("slot").and_then(|v| v.as_u64());
-                            let item_id = auction_data.get("id").and_then(|v| v.as_str()).map(|s| s.to_string());
+                            let item_id = auction_data
+                                .get("id")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
 
                             // If itemName is null/absent, fall back to looking up the display
                             // name from the bot's cached inventory at the given slot.
@@ -2383,7 +2789,8 @@ async fn main() -> Result<()> {
                             match (item_raw_resolved.as_deref(), price, duration) {
                                 (Some(item_raw), Some(price), Some(duration)) => {
                                     // Strip Minecraft color codes (§X) from item name
-                                    let item_name = frikadellen_baf::utils::remove_minecraft_colors(item_raw);
+                                    let item_name =
+                                        hungz_flipper::utils::remove_minecraft_colors(item_raw);
 
                                     // Check if the ORIGINAL flip was unprofitable at the
                                     // time of purchase.  We compare the COFL target price
@@ -2401,7 +2808,9 @@ async fn main() -> Result<()> {
                                                     let target = entry.0.target;
                                                     if buy_price > 0 && target > 0 {
                                                         let ah_fee = calculate_ah_fee(target);
-                                                        let expected_profit = target as i64 - buy_price as i64 - ah_fee as i64;
+                                                        let expected_profit = target as i64
+                                                            - buy_price as i64
+                                                            - ah_fee as i64;
                                                         if expected_profit < 0 {
                                                             let loss_amount = expected_profit.abs();
                                                             warn!("[createAuction] Skipping originally-unprofitable flip: {} — target {} - buy {} - fee {} = {} coins",
@@ -2461,7 +2870,11 @@ async fn main() -> Result<()> {
                                             queue.enqueue(cmd, CommandPriority::High, false);
                                         });
                                     } else {
-                                        command_queue_clone.enqueue(cmd, CommandPriority::High, false);
+                                        command_queue_clone.enqueue(
+                                            cmd,
+                                            CommandPriority::High,
+                                            false,
+                                        );
                                     }
                                 }
                                 _ => {
@@ -2478,7 +2891,8 @@ async fn main() -> Result<()> {
                     debug!("Processing trade request");
                     // Parse trade data to get player name
                     if let Ok(trade_data) = serde_json::from_str::<serde_json::Value>(&data) {
-                        if let Some(player) = trade_data.get("playerName").and_then(|v| v.as_str()) {
+                        if let Some(player) = trade_data.get("playerName").and_then(|v| v.as_str())
+                        {
                             command_queue_clone.enqueue(
                                 CommandType::AcceptTrade {
                                     player_name: player.to_string(),
@@ -2501,7 +2915,9 @@ async fn main() -> Result<()> {
                     // when both AH flips and bazaar flips are enabled.
                     // Relaxed ordering is fine here — these are simple toggle flags where
                     // eventual visibility across threads is sufficient.
-                    if enable_bazaar_flips_ws.load(Ordering::Relaxed) && enable_ah_flips_ws.load(Ordering::Relaxed) {
+                    if enable_bazaar_flips_ws.load(Ordering::Relaxed)
+                        && enable_ah_flips_ws.load(Ordering::Relaxed)
+                    {
                         let baf_msg = "§f[§4BAF§f]: §c⚡ AH Flips incoming in ~10s — closing windows, pausing bazaar".to_string();
                         print_mc_chat(&baf_msg);
                         let _ = chat_tx_ws.send(baf_msg);
@@ -2510,13 +2926,13 @@ async fn main() -> Result<()> {
 
                         // Close the bazaar window when AH flips are enabled to process them immediately.
                         bot_client_for_ws.close_current_window();
-                        
+
                         // Force state to Idle so the AH flip can be processed immediately instead of dropped.
                         let current_state = bot_client_for_ws.state();
-                        if current_state != frikadellen_baf::types::BotState::Purchasing
-                            && current_state != frikadellen_baf::types::BotState::Startup
+                        if current_state != hungz_flipper::types::BotState::Purchasing
+                            && current_state != hungz_flipper::types::BotState::Startup
                         {
-                            bot_client_for_ws.set_state(frikadellen_baf::types::BotState::Idle);
+                            bot_client_for_ws.set_state(hungz_flipper::types::BotState::Idle);
                         }
 
                         let chat_tx_resume = chat_tx_ws.clone();
@@ -2530,15 +2946,11 @@ async fn main() -> Result<()> {
                             print_mc_chat(&baf_msg);
                             let _ = chat_tx_resume.send(baf_msg);
                             info!("[BazaarFlips] Bazaar flips resumed after AH flip window");
-                            
+
                             // Re-queue explicitly deferred ManageOrders (like undercut/outbid cancellations)
                             if let Ok(mut g) = deferred_manage_orders_inner.lock() {
                                 for cmd in g.drain(..) {
-                                    command_queue_resume.enqueue(
-                                        cmd,
-                                        CommandPriority::High,
-                                        false,
-                                    );
+                                    command_queue_resume.enqueue(cmd, CommandPriority::High, false);
                                 }
                             }
 
@@ -2547,7 +2959,10 @@ async fn main() -> Result<()> {
                             if !command_queue_resume.has_manage_orders() {
                                 info!("[BazaarFlips] Queuing deferred ManageOrders after AH flip window");
                                 command_queue_resume.enqueue(
-                                    CommandType::ManageOrders { cancel_open: false, target_item: None },
+                                    CommandType::ManageOrders {
+                                        cancel_open: false,
+                                        target_item: None,
+                                    },
                                     CommandPriority::Normal,
                                     false,
                                 );
@@ -2564,19 +2979,35 @@ async fn main() -> Result<()> {
                     // Look for any non-NONE license matching the current IGN first,
                     // then fall back to any known IGN.
                     let current_ign = &ingame_name_ws;
-                    if let Some((found_ign, global_idx, tier)) = entries.iter().find(|(name, _, tier)| {
-                        name.eq_ignore_ascii_case(current_ign) && !tier.eq_ignore_ascii_case("NONE")
-                    }) {
-                        info!("[LicenseDetect] Found {} license index {} for '{}' ", tier, global_idx, found_ign);
+                    if let Some((found_ign, global_idx, tier)) =
+                        entries.iter().find(|(name, _, tier)| {
+                            name.eq_ignore_ascii_case(current_ign)
+                                && !tier.eq_ignore_ascii_case("NONE")
+                        })
+                    {
+                        info!(
+                            "[LicenseDetect] Found {} license index {} for '{}' ",
+                            tier, global_idx, found_ign
+                        );
                         detected_cofl_license_ws.store(*global_idx, Ordering::Relaxed);
-                    } else if let Some((found_ign, global_idx, tier)) = entries.iter().find(|(name, _, tier)| {
-                        // Check all configured IGNs as a fallback
-                        ingame_names_ws.iter().any(|ign| name.eq_ignore_ascii_case(ign))
-                            && !tier.eq_ignore_ascii_case("NONE")
-                    }) {
-                        info!("[LicenseDetect] Found {} license index {} for '{}' (other account)", tier, global_idx, found_ign);
+                    } else if let Some((found_ign, global_idx, tier)) =
+                        entries.iter().find(|(name, _, tier)| {
+                            // Check all configured IGNs as a fallback
+                            ingame_names_ws
+                                .iter()
+                                .any(|ign| name.eq_ignore_ascii_case(ign))
+                                && !tier.eq_ignore_ascii_case("NONE")
+                        })
+                    {
+                        info!(
+                            "[LicenseDetect] Found {} license index {} for '{}' (other account)",
+                            tier, global_idx, found_ign
+                        );
                         detected_cofl_license_ws.store(*global_idx, Ordering::Relaxed);
-                    } else if let Some((found_ign, _, _)) = entries.iter().find(|(name, _, _)| name.eq_ignore_ascii_case(current_ign)) {
+                    } else if let Some((found_ign, _, _)) = entries
+                        .iter()
+                        .find(|(name, _, _)| name.eq_ignore_ascii_case(current_ign))
+                    {
                         info!("[LicenseDetect] Found '{}' but only has NONE licenses — no transfer needed", found_ign);
                     } else {
                         // No active license found for any configured IGN — set the
@@ -2620,7 +3051,7 @@ async fn main() -> Result<()> {
     let _ws_client_proc = ws_client.clone();
     let _bot_client_proc_inv = bot_client.clone();
     tokio::spawn(async move {
-        use frikadellen_baf::types::BotState;
+        use hungz_flipper::types::BotState;
         // Debounce: avoid requesting sellinventory too frequently when inventory is full
         let mut last_sellinventory_request = Instant::now() - Duration::from_secs(300);
         loop {
@@ -2648,13 +3079,16 @@ async fn main() -> Result<()> {
                 if bot_client_clone.is_startup_in_progress() {
                     let is_startup_cmd = matches!(
                         cmd.command_type,
-                        frikadellen_baf::types::CommandType::CheckCookie
-                        | frikadellen_baf::types::CommandType::ManageOrders { .. }
-                        | frikadellen_baf::types::CommandType::ClaimSoldItem
-                        | frikadellen_baf::types::CommandType::ClaimPurchasedItem
+                        hungz_flipper::types::CommandType::CheckCookie
+                            | hungz_flipper::types::CommandType::ManageOrders { .. }
+                            | hungz_flipper::types::CommandType::ClaimSoldItem
+                            | hungz_flipper::types::CommandType::ClaimPurchasedItem
                     );
                     if !is_startup_cmd {
-                        debug!("[Queue] Deferring non-startup command during startup: {:?}", cmd.command_type);
+                        debug!(
+                            "[Queue] Deferring non-startup command during startup: {:?}",
+                            cmd.command_type
+                        );
                         command_queue_processor.complete_current();
                         sleep(Duration::from_millis(250)).await;
                         continue;
@@ -2667,7 +3101,10 @@ async fn main() -> Result<()> {
                     &cmd.command_type,
                     bazaar_flips_paused_proc.load(Ordering::Relaxed),
                 ) {
-                    if matches!(cmd.command_type, frikadellen_baf::types::CommandType::ManageOrders { .. }) {
+                    if matches!(
+                        cmd.command_type,
+                        hungz_flipper::types::CommandType::ManageOrders { .. }
+                    ) {
                         if let Ok(mut g) = deferred_manage_orders_proc.lock() {
                             g.push(cmd.command_type.clone());
                         }
@@ -2676,7 +3113,10 @@ async fn main() -> Result<()> {
                         print_mc_chat(&baf_msg);
                         let _ = chat_tx_proc.send(baf_msg);
                     } else {
-                        debug!("[Queue] Dropping bazaar command {:?} — AH flip window active", cmd.command_type);
+                        debug!(
+                            "[Queue] Dropping bazaar command {:?} — AH flip window active",
+                            cmd.command_type
+                        );
                     }
                     command_queue_processor.complete_current();
                     sleep(Duration::from_millis(50)).await;
@@ -2686,10 +3126,15 @@ async fn main() -> Result<()> {
                 // Skip SellToAuction commands when the auction house is at the
                 // listing limit — avoids the repeated /ah → "Maximum auction count
                 // reached" → idle → next SellToAuction spam loop.
-                if matches!(cmd.command_type, frikadellen_baf::types::CommandType::SellToAuction { .. })
-                    && bot_client_clone.is_auction_at_limit()
+                if matches!(
+                    cmd.command_type,
+                    hungz_flipper::types::CommandType::SellToAuction { .. }
+                ) && bot_client_clone.is_auction_at_limit()
                 {
-                    debug!("[Queue] Dropping SellToAuction — auction limit reached: {:?}", cmd.command_type);
+                    debug!(
+                        "[Queue] Dropping SellToAuction — auction limit reached: {:?}",
+                        cmd.command_type
+                    );
                     command_queue_processor.complete_current();
                     sleep(Duration::from_millis(50)).await;
                     continue;
@@ -2703,15 +3148,18 @@ async fn main() -> Result<()> {
                 if bot_client_clone.is_inventory_full() {
                     let is_selling_cmd = matches!(
                         cmd.command_type,
-                        frikadellen_baf::types::CommandType::SellToAuction { .. }
-                        | frikadellen_baf::types::CommandType::BazaarSellOrder { .. }
-                        | frikadellen_baf::types::CommandType::ManageOrders { .. }
-                        | frikadellen_baf::types::CommandType::ClaimSoldItem
-                        | frikadellen_baf::types::CommandType::SellInventoryBz
-                        | frikadellen_baf::types::CommandType::CancelAuction { .. }
+                        hungz_flipper::types::CommandType::SellToAuction { .. }
+                            | hungz_flipper::types::CommandType::BazaarSellOrder { .. }
+                            | hungz_flipper::types::CommandType::ManageOrders { .. }
+                            | hungz_flipper::types::CommandType::ClaimSoldItem
+                            | hungz_flipper::types::CommandType::SellInventoryBz
+                            | hungz_flipper::types::CommandType::CancelAuction { .. }
                     );
                     if !is_selling_cmd {
-                        debug!("[Queue] Dropping {:?} — inventory full (selling mode)", cmd.command_type);
+                        debug!(
+                            "[Queue] Dropping {:?} — inventory full (selling mode)",
+                            cmd.command_type
+                        );
                         // Proactively request /cofl sellinventory to get sell
                         // recommendations (especially bazaar) when inventory is full.
                         // Debounce to avoid spamming COFL — 60s between requests.
@@ -2719,9 +3167,9 @@ async fn main() -> Result<()> {
                             last_sellinventory_request = Instant::now();
                             info!("[Queue] Triggering SellInventoryBz to create sell offers for all items (inventory full)");
                             command_queue_processor.enqueue(
-                                frikadellen_baf::types::CommandType::SellInventoryBz,
-                                frikadellen_baf::types::CommandPriority::High,
-                                true
+                                hungz_flipper::types::CommandType::SellInventoryBz,
+                                hungz_flipper::types::CommandPriority::High,
+                                true,
                             );
                         }
                         command_queue_processor.complete_current();
@@ -2730,8 +3178,11 @@ async fn main() -> Result<()> {
                         // and free up bazaar order slots.
                         if !command_queue_processor.has_manage_orders() {
                             command_queue_processor.enqueue(
-                                frikadellen_baf::types::CommandType::ManageOrders { cancel_open: false, target_item: None },
-                                frikadellen_baf::types::CommandPriority::High,
+                                hungz_flipper::types::CommandType::ManageOrders {
+                                    cancel_open: false,
+                                    target_item: None,
+                                },
+                                hungz_flipper::types::CommandPriority::High,
                                 false,
                             );
                         }
@@ -2744,8 +3195,10 @@ async fn main() -> Result<()> {
                 // purchased items to keep space available for selling.  The
                 // purchases are safe in the AH collect bin and will be claimed
                 // once inventory drains.
-                if matches!(cmd.command_type, frikadellen_baf::types::CommandType::ClaimPurchasedItem)
-                    && bot_client_clone.is_inventory_near_full()
+                if matches!(
+                    cmd.command_type,
+                    hungz_flipper::types::CommandType::ClaimPurchasedItem
+                ) && bot_client_clone.is_inventory_near_full()
                 {
                     debug!("[Queue] Deferring ClaimPurchasedItem — inventory near full, prioritizing selling");
                     command_queue_processor.complete_current();
@@ -2758,10 +3211,15 @@ async fn main() -> Result<()> {
                 // inventory.  The send_command handler will attempt them anyway;
                 // if the server rejects them the at_limit flag stays set and
                 // a ManageOrders run (already queued at intake) will free a slot.
-                if matches!(cmd.command_type, frikadellen_baf::types::CommandType::BazaarBuyOrder { .. })
-                    && bot_client_clone.is_bazaar_at_limit()
+                if matches!(
+                    cmd.command_type,
+                    hungz_flipper::types::CommandType::BazaarBuyOrder { .. }
+                ) && bot_client_clone.is_bazaar_at_limit()
                 {
-                    debug!("[Queue] Dropping BUY bazaar order — bazaar limit reached: {:?}", cmd.command_type);
+                    debug!(
+                        "[Queue] Dropping BUY bazaar order — bazaar limit reached: {:?}",
+                        cmd.command_type
+                    );
                     command_queue_processor.complete_current();
                     sleep(Duration::from_millis(50)).await;
                     continue;
@@ -2769,10 +3227,15 @@ async fn main() -> Result<()> {
 
                 // Skip SellToAuction when the auction slot is blocked (stuck item).
                 // A ClaimSold / ManageOrders cycle will clear the flag.
-                if matches!(cmd.command_type, frikadellen_baf::types::CommandType::SellToAuction { .. })
-                    && bot_client_clone.is_auction_slot_blocked()
+                if matches!(
+                    cmd.command_type,
+                    hungz_flipper::types::CommandType::SellToAuction { .. }
+                ) && bot_client_clone.is_auction_slot_blocked()
                 {
-                    warn!("[Queue] Dropping SellToAuction — auction slot blocked (stuck item): {:?}", cmd.command_type);
+                    warn!(
+                        "[Queue] Dropping SellToAuction — auction slot blocked (stuck item): {:?}",
+                        cmd.command_type
+                    );
                     command_queue_processor.complete_current();
                     sleep(Duration::from_millis(50)).await;
                     continue;
@@ -2786,22 +3249,22 @@ async fn main() -> Result<()> {
                 // Per-command-type timeout: how long to wait for the bot to leave the
                 // busy state before declaring it stuck and forcing a reset.
                 let timeout_secs: u64 = match cmd.command_type {
-                    frikadellen_baf::types::CommandType::ClaimPurchasedItem
-                    | frikadellen_baf::types::CommandType::ClaimSoldItem
-                    | frikadellen_baf::types::CommandType::CheckCookie => 60,
+                    hungz_flipper::types::CommandType::ClaimPurchasedItem
+                    | hungz_flipper::types::CommandType::ClaimSoldItem
+                    | hungz_flipper::types::CommandType::CheckCookie => 60,
                     // ManageOrders processes ONE order per cycle with a 10s
                     // internal deadline; keep external timeout just above.
-                    frikadellen_baf::types::CommandType::ManageOrders { .. } => 15,
-                    frikadellen_baf::types::CommandType::BazaarBuyOrder { .. }
-                    | frikadellen_baf::types::CommandType::BazaarSellOrder { .. } => 20,
-                    frikadellen_baf::types::CommandType::SellToAuction { .. } => 15,
+                    hungz_flipper::types::CommandType::ManageOrders { .. } => 15,
+                    hungz_flipper::types::CommandType::BazaarBuyOrder { .. }
+                    | hungz_flipper::types::CommandType::BazaarSellOrder { .. } => 20,
+                    hungz_flipper::types::CommandType::SellToAuction { .. } => 15,
                     _ => 10,
                 };
 
                 // Poll until the bot returns to an allows_commands() state or we hit the
                 // per-type timeout. A single loop replaces the previous per-type if/else chain.
-                let deadline = std::time::Instant::now()
-                    + std::time::Duration::from_secs(timeout_secs);
+                let deadline =
+                    std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
                 let mut interrupted = false;
                 loop {
                     sleep(Duration::from_millis(250)).await;
@@ -2847,7 +3310,10 @@ async fn main() -> Result<()> {
                 // AH flip so it is picked up immediately.
                 // Use a longer delay after auction listings to prevent "Sending packets too fast" kicks.
                 if !interrupted {
-                    let delay = if matches!(cmd.command_type, frikadellen_baf::types::CommandType::SellToAuction { .. }) {
+                    let delay = if matches!(
+                        cmd.command_type,
+                        hungz_flipper::types::CommandType::SellToAuction { .. }
+                    ) {
                         std::cmp::max(command_delay_ms, auction_listing_delay_ms)
                     } else {
                         command_delay_ms
@@ -2858,28 +3324,25 @@ async fn main() -> Result<()> {
                 // Queue is empty — wait for a notification instead of busy-polling.
                 // Times out after 500 ms so paused-state and other periodic checks
                 // still run promptly even when no commands arrive.
-                let _ = tokio::time::timeout(
-                    Duration::from_millis(500),
-                    &mut notified,
-                ).await;
+                let _ = tokio::time::timeout(Duration::from_millis(500), &mut notified).await;
             }
         }
     });
 
     // Bot will complete its startup sequence automatically
     // The state will transition from Startup -> Idle after initialization
-    info!("BAF initialization started - waiting for bot to complete setup...");
+    info!("Hungz initialization started - waiting for bot to complete setup...");
 
     // Set up console input handler for commands
     info!("Console interface ready - type commands and press Enter:");
     info!("  /cofl <command> - Send command to COFL websocket");
     info!("  /<command> - Send command to Minecraft");
     info!("  <text> - Send chat message to COFL websocket");
-    
+
     // Spawn console input handler
     let ws_client_for_console = ws_client.clone();
     let command_queue_for_console = command_queue.clone();
-    
+
     tokio::spawn(async move {
         // Rustyline provides readline with history (up/down arrow key navigation) and
         // proper terminal handling. Since it's a blocking API we drive it in a
@@ -2927,16 +3390,16 @@ async fn main() -> Result<()> {
             if input.is_empty() {
                 continue;
             }
-            
+
             let lowercase_input = input.to_lowercase();
-            
+
             // Handle /cofl and /baf commands (matching TypeScript consoleHandler.ts)
             if lowercase_input.starts_with("/cofl") || lowercase_input.starts_with("/baf") {
                 let parts: Vec<&str> = input.split_whitespace().collect();
                 if parts.len() > 1 {
                     let command = parts[1];
                     let args = parts[2..].join(" ");
-                    
+
                     // Handle locally-processed commands (matching TypeScript consoleHandler.ts)
                     match command.to_lowercase().as_str() {
                         "queue" => {
@@ -2958,7 +3421,7 @@ async fn main() -> Result<()> {
                             // Fall through to send to websocket
                         }
                     }
-                    
+
                     // Send to websocket with command as type
                     // Match TypeScript: data field must be JSON-stringified (double-encoded)
                     let data_json = match serde_json::to_string(&args) {
@@ -2971,8 +3434,9 @@ async fn main() -> Result<()> {
                     let message = serde_json::json!({
                         "type": command,
                         "data": data_json  // JSON-stringified to match TypeScript JSON.stringify()
-                    }).to_string();
-                    
+                    })
+                    .to_string();
+
                     if let Err(e) = ws_client_for_console.send_message(&message).await {
                         error!("Failed to send command to websocket: {}", e);
                     } else {
@@ -2984,21 +3448,22 @@ async fn main() -> Result<()> {
                     let message = serde_json::json!({
                         "type": "chat",
                         "data": data_json
-                    }).to_string();
-                    
+                    })
+                    .to_string();
+
                     if let Err(e) = ws_client_for_console.send_message(&message).await {
                         error!("Failed to send bare /cofl command to websocket: {}", e);
                     }
                 }
-            } 
+            }
             // Handle /ingame command
             else if lowercase_input.starts_with("/ingame ") {
                 let msg = input[8..].to_string();
                 command_queue_for_console.enqueue(
-                    frikadellen_baf::types::CommandType::SendChat { 
-                        message: msg.clone() 
+                    hungz_flipper::types::CommandType::SendChat {
+                        message: msg.clone(),
                     },
-                    frikadellen_baf::types::CommandPriority::High,
+                    hungz_flipper::types::CommandPriority::High,
                     false,
                 );
                 info!("Queued Minecraft Ingame Message: {}", msg);
@@ -3009,8 +3474,9 @@ async fn main() -> Result<()> {
                 let message = serde_json::json!({
                     "type": "chat",
                     "data": format!("\"{}\"", args)
-                }).to_string();
-                
+                })
+                .to_string();
+
                 let ws_client_clone = ws_client_for_console.clone();
                 tokio::spawn(async move {
                     if let Err(e) = ws_client_clone.send_message(&message).await {
@@ -3021,10 +3487,10 @@ async fn main() -> Result<()> {
             // Handle other slash commands - send to Minecraft
             else if input.starts_with('/') {
                 command_queue_for_console.enqueue(
-                    frikadellen_baf::types::CommandType::SendChat { 
-                        message: input.to_string() 
+                    hungz_flipper::types::CommandType::SendChat {
+                        message: input.to_string(),
                     },
-                    frikadellen_baf::types::CommandPriority::High,
+                    hungz_flipper::types::CommandPriority::High,
                     false,
                 );
                 info!("Queued Minecraft command: {}", input);
@@ -3042,8 +3508,9 @@ async fn main() -> Result<()> {
                 let message = serde_json::json!({
                     "type": "chat",
                     "data": data_json  // JSON-stringified to match TypeScript JSON.stringify()
-                }).to_string();
-                
+                })
+                .to_string();
+
                 if let Err(e) = ws_client_for_console.send_message(&message).await {
                     error!("Failed to send chat to websocket: {}", e);
                 } else {
@@ -3052,8 +3519,8 @@ async fn main() -> Result<()> {
             }
         }
     });
-    
-    // Fetch top 15 bazaar flips via in-game command periodically (every 12 hours) and handle allocations
+
+    // Fetch top 15 bazaar flips via in-game command periodically (every 1 hour) and handle allocations
     if config.enable_bazaar_flips {
         let command_queue_bz = command_queue.clone();
         let bazaar_flips_paused_bz = bazaar_flips_paused.clone();
@@ -3064,8 +3531,8 @@ async fn main() -> Result<()> {
         let config_loader_bz = config_loader.clone();
 
         tokio::spawn(async move {
-            use frikadellen_baf::types::{CommandType, CommandPriority};
-            
+            use hungz_flipper::types::{CommandPriority, CommandType};
+
             // Loop for requesting new BZ top items every 12 hours
             let bz_paused = bazaar_flips_paused_bz.clone();
             let top_items_clear = bz_top_items_calc.clone();
@@ -3077,34 +3544,63 @@ async fn main() -> Result<()> {
                             .user_agent("Mozilla/5.0")
                             .build()
                             .unwrap_or_else(|_| reqwest::Client::new());
-                            
-                        if let Ok(resp) = client.get("https://sky.coflnet.com/api/flip/bazaar/spread").send().await {
+
+                        if let Ok(resp) = client
+                            .get("https://sky.coflnet.com/api/flip/bazaar/spread")
+                            .send()
+                            .await
+                        {
                             if let Ok(json) = resp.json::<serde_json::Value>().await {
                                 if let Some(items) = json.as_array() {
                                     let mut best_flips = Vec::new();
                                     for item in items {
-                                        let is_manipulated = item.get("isManipulated").and_then(|v| v.as_bool()).unwrap_or(false);
+                                        let is_manipulated = item
+                                            .get("isManipulated")
+                                            .and_then(|v| v.as_bool())
+                                            .unwrap_or(false);
                                         if !is_manipulated {
                                             if let Some(flip) = item.get("flip") {
-                                                let volume = flip.get("volume").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                                                let profit_per_hour = flip.get("profitPerHour").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                                                let sell_price = flip.get("sellPrice").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                                                let item_name = item.get("itemName").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                                
-                                                if profit_per_hour > 0.0 && volume > 500.0 && !item_name.is_empty() {
-                                                    best_flips.push((item_name, profit_per_hour, sell_price));
+                                                let volume = flip
+                                                    .get("volume")
+                                                    .and_then(|v| v.as_f64())
+                                                    .unwrap_or(0.0);
+                                                let profit_per_hour = flip
+                                                    .get("profitPerHour")
+                                                    .and_then(|v| v.as_f64())
+                                                    .unwrap_or(0.0);
+                                                let sell_price = flip
+                                                    .get("sellPrice")
+                                                    .and_then(|v| v.as_f64())
+                                                    .unwrap_or(0.0);
+                                                let item_name = item
+                                                    .get("itemName")
+                                                    .and_then(|v| v.as_str())
+                                                    .unwrap_or("")
+                                                    .to_string();
+
+                                                if profit_per_hour > 0.0
+                                                    && volume > 500.0
+                                                    && !item_name.is_empty()
+                                                {
+                                                    best_flips.push((
+                                                        item_name,
+                                                        profit_per_hour,
+                                                        sell_price,
+                                                    ));
                                                 }
                                             }
                                         }
                                     }
-                                    
-                                    best_flips.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-                                    
+
+                                    best_flips.sort_by(|a, b| {
+                                        b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+                                    });
+
                                     let mut new_top = Vec::new();
                                     for (name, p_h, s_p) in best_flips.into_iter().take(15) {
                                         new_top.push((name, p_h, s_p));
                                     }
-                                    
+
                                     if !new_top.is_empty() {
                                         let mut items_lock = top_items_clear.lock().await;
                                         items_lock.clear();
@@ -3115,7 +3611,8 @@ async fn main() -> Result<()> {
                             }
                         }
                     }
-                    tokio::time::sleep(tokio::time::Duration::from_secs(43200)).await; // 12 hours
+                    tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
+                    // 1 hour
                 }
             });
 
@@ -3138,68 +3635,94 @@ async fn main() -> Result<()> {
 
                 let current_orders = bazaar_tracker_calc.get_orders();
                 let mut escrow_used = 0.0;
-                let mut active_buy_items = std::collections::HashSet::new();
+                let mut active_items = std::collections::HashSet::new();
                 for order in &current_orders {
-                    if order.is_buy_order {
-                        escrow_used += order.amount as f64 * order.price_per_unit;
-                        active_buy_items.insert(order.item_name.clone());
-                    }
+                    // Count BOTH buy and sell orders toward the purse limit
+                    // so the total tied-up value (buy escrow + sell inventory value)
+                    // stays within the configured limit.
+                    escrow_used += order.amount as f64 * order.price_per_unit;
+                    active_items.insert(order.item_name.to_lowercase());
                 }
-                
+
                 let pending_orders = command_queue_bz.get_bazaar_buy_orders_in_queue();
                 for (item, cost) in pending_orders {
                     escrow_used += cost;
-                    active_buy_items.insert(item);
+                    active_items.insert(item.to_lowercase());
+                }
+
+                let pending_sell_orders = command_queue_bz.get_bazaar_sell_orders_in_queue();
+                for item in pending_sell_orders {
+                    active_items.insert(item.to_lowercase());
                 }
 
                 let mut purse = 0.0;
                 if let Some(p) = bot_client_bz.get_purse() {
                     purse = p as f64;
                 }
-                
+
                 let available_budget = purse.min(limit - escrow_used).max(0.0);
                 tracing::info!("[BazaarAuto] Budget calcs - purse: {:.1}, limit: {:.1}, escrow: {:.1}, avail: {:.1}", purse, limit, escrow_used, available_budget);
 
                 // 3. Place buy orders
-                if !bazaar_flips_paused_bz.load(std::sync::atomic::Ordering::Relaxed) && !top_items_copy.is_empty() {
+                if !bazaar_flips_paused_bz.load(std::sync::atomic::Ordering::Relaxed)
+                    && !top_items_copy.is_empty()
+                {
                     let mut items_to_buy = Vec::new();
-                    
-                    let active_orders_count = active_buy_items.len();
+
+                    let active_orders_count = active_items.len();
                     let remaining_orders_allowed = max_orders;
-                    
-                    tracing::info!("[BazaarAuto] Orders limit: {}, Active count: {}", remaining_orders_allowed, active_orders_count);
+
+                    tracing::info!(
+                        "[BazaarAuto] Orders limit: {}, Active count: {}",
+                        remaining_orders_allowed,
+                        active_orders_count
+                    );
 
                     if remaining_orders_allowed > 0 {
                         let mut active_count = active_orders_count;
                         for (item_name, _profit, api_sell) in &top_items_copy {
-                            if active_count >= remaining_orders_allowed && !active_buy_items.contains(item_name) {
+                            if active_count >= remaining_orders_allowed
+                                && !active_items.contains(&item_name.to_lowercase())
+                            {
                                 break;
                             }
-                            
+
                             // check if the item is blacklisted (failed requirements previously)
-                            if bz_blacklisted_items_calc.lock().await.contains(&item_name.to_lowercase()) {
+                            if bz_blacklisted_items_calc
+                                .lock()
+                                .await
+                                .contains(&item_name.to_lowercase())
+                            {
                                 tracing::info!("[BazaarAuto] Skipping '{}' (blacklisted due to requirement failure)", item_name);
                                 continue;
                             }
 
                             let c_i = api_sell + 0.1; // top order + 0.1
-                            
-                            if active_buy_items.contains(item_name) {
-                                // Find current order price
-                                let current_price = current_orders.iter()
-                                    .find(|o| o.item_name.eq_ignore_ascii_case(item_name) && o.is_buy_order)
+
+                            if active_items.contains(&item_name.to_lowercase()) {
+                                // Find current order price (only if it's a BUY order)
+                                let current_price = current_orders
+                                    .iter()
+                                    .find(|o| {
+                                        o.item_name.eq_ignore_ascii_case(item_name)
+                                            && o.is_buy_order
+                                    })
                                     .map(|o| o.price_per_unit)
                                     .unwrap_or(0.0);
-                                
+
                                 if c_i > current_price + 0.1 && current_price > 0.0 {
+                                    if command_queue_bz.has_bazaar_buy_for_item(item_name) {
+                                        tracing::info!("[BazaarAuto] Update for '{}' buy order already pending, skipping duplicate.", item_name);
+                                        continue;
+                                    }
                                     tracing::info!("[BazaarAuto] Updating '{}' buy order. Old: {:.1}, New: {:.1}", item_name, current_price, c_i);
                                     command_queue_bz.enqueue(
                                         CommandType::ManageOrders {
                                             cancel_open: true,
-                                            target_item: Some((item_name.clone(), true))
+                                            target_item: Some((item_name.clone(), true)),
                                         },
                                         CommandPriority::Normal,
-                                        true
+                                        true,
                                     );
                                     // we can let it queue a new one, but we shouldn't bump active_count since it replaces it
                                 } else {
@@ -3221,25 +3744,29 @@ async fn main() -> Result<()> {
                             }
                         }
                     }
-                    
+
                     let count = items_to_buy.len();
                     if count > 0 && available_budget > 0.0 {
                         let mut budget_left = available_budget;
-                        
+
                         for (i, (item_name, c_i)) in items_to_buy.into_iter().enumerate() {
                             let items_left = count - i;
                             let budget_per_item = budget_left / (items_left as f64);
                             tracing::info!("[BazaarAuto] eval dynamically budget_per_item: {:.1} for counting {} items left", budget_per_item, items_left);
-                            
+
                             let mut amount_to_buy = (budget_per_item / c_i).floor() as u64;
                             if amount_to_buy == 0 && c_i <= budget_left {
                                 amount_to_buy = (budget_left / c_i).floor() as u64;
                             }
-                            
-                            tracing::info!("[BazaarAuto] Pre-cap amount_to_buy for {}: {}", item_name, amount_to_buy);
+
+                            tracing::info!(
+                                "[BazaarAuto] Pre-cap amount_to_buy for {}: {}",
+                                item_name,
+                                amount_to_buy
+                            );
                             // cap 71680 (1024 stack limit roughly)
                             amount_to_buy = amount_to_buy.min(71680);
-                            
+
                             if amount_to_buy > 0 {
                                 command_queue_bz.enqueue(
                                     CommandType::BazaarBuyOrder {
@@ -3249,7 +3776,7 @@ async fn main() -> Result<()> {
                                         price_per_unit: c_i,
                                     },
                                     CommandPriority::Normal,
-                                    true
+                                    true,
                                 );
                                 let cost = amount_to_buy as f64 * c_i;
                                 budget_left -= cost;
@@ -3274,8 +3801,11 @@ async fn main() -> Result<()> {
                 if bot_client_scoreboard.state().allows_commands() {
                     let scoreboard_lines = bot_client_scoreboard.get_scoreboard_lines();
                     if !scoreboard_lines.is_empty() {
-                        let data_json = serde_json::to_string(&scoreboard_lines).unwrap_or_else(|_| "[]".to_string());
-                        let msg = serde_json::json!({"type": "uploadScoreboard", "data": data_json}).to_string();
+                        let data_json = serde_json::to_string(&scoreboard_lines)
+                            .unwrap_or_else(|_| "[]".to_string());
+                        let msg =
+                            serde_json::json!({"type": "uploadScoreboard", "data": data_json})
+                                .to_string();
                         if let Err(e) = ws_client_scoreboard.send_message(&msg).await {
                             debug!("Failed to send periodic scoreboard upload: {}", e);
                         } else {
@@ -3297,7 +3827,7 @@ async fn main() -> Result<()> {
         let order_interval = config.bazaar_order_check_interval_seconds;
         let cancel_minutes_per_million = config.bazaar_order_cancel_minutes_per_million;
         tokio::spawn(async move {
-            use frikadellen_baf::types::{CommandType, CommandPriority};
+            use hungz_flipper::types::{CommandPriority, CommandType};
             // Give startup workflow time to complete before starting periodic checks
             sleep(Duration::from_secs(120)).await;
             loop {
@@ -3326,15 +3856,27 @@ async fn main() -> Result<()> {
                 // is still full, the flag will be re-set on the next failed
                 // claim attempt.
                 if bot_client_orders.is_inventory_full() {
-                    debug!("[BazaarOrders] Inventory full — waiting extra 90s before next order check");
+                    debug!(
+                        "[BazaarOrders] Inventory full — waiting extra 90s before next order check"
+                    );
                     sleep(Duration::from_secs(90)).await;
                     bot_client_orders.clear_inventory_full();
-                    debug!("[BazaarOrders] Inventory full cooldown elapsed — clearing flag for retry");
+                    debug!(
+                        "[BazaarOrders] Inventory full cooldown elapsed — clearing flag for retry"
+                    );
                 }
-                if bot_client_orders.state().allows_commands() && !command_queue_orders.has_manage_orders() {
-                    debug!("[BazaarOrders] Periodic order check triggered (every {}s)", order_interval);
+                if bot_client_orders.state().allows_commands()
+                    && !command_queue_orders.has_manage_orders()
+                {
+                    debug!(
+                        "[BazaarOrders] Periodic order check triggered (every {}s)",
+                        order_interval
+                    );
                     command_queue_orders.enqueue(
-                        CommandType::ManageOrders { cancel_open: false, target_item: None },
+                        CommandType::ManageOrders {
+                            cancel_open: false,
+                            target_item: None,
+                        },
                         CommandPriority::Normal,
                         false,
                     );
@@ -3356,7 +3898,133 @@ async fn main() -> Result<()> {
                 sleep(Duration::from_secs(60)).await;
                 let removed = bazaar_tracker_cleanup.remove_stale_orders(max_age_secs);
                 if removed > 0 {
-                    info!("[BazaarTracker] Cleaned up {} stale order(s) older than {}m", removed, max_age_secs / 60);
+                    info!(
+                        "[BazaarTracker] Cleaned up {} stale order(s) older than {}m",
+                        removed,
+                        max_age_secs / 60
+                    );
+                }
+            }
+        });
+    }
+
+    // Idle bazaar inventory sell
+    if config.enable_bazaar_flips {
+        let bot_client_idle_bz = bot_client.clone();
+        let command_queue_idle_bz = command_queue.clone();
+        tokio::spawn(async move {
+            use hungz_flipper::types::{CommandPriority, CommandType};
+            // Wait for startup to complete
+            sleep(Duration::from_secs(120)).await;
+            loop {
+                sleep(Duration::from_secs(5)).await;
+                if bot_client_idle_bz.state().allows_commands()
+                    && command_queue_idle_bz.is_empty()
+                    && bot_client_idle_bz.empty_slot_count() < 36
+                {
+                    tracing::info!("[IdleInventoryBz] Bot is idle and has inventory items, queuing SellInventoryBz to check for sellable bazaar items");
+                    command_queue_idle_bz.enqueue(
+                        CommandType::SellInventoryBz,
+                        CommandPriority::Normal,
+                        false,
+                    );
+                }
+            }
+        });
+    }
+
+    // Idle bazaar order check for outbidded orders
+    if config.enable_bazaar_flips {
+        let bot_client_idle_order = bot_client.clone();
+        let command_queue_idle_order = command_queue.clone();
+        let bazaar_tracker_idle_order = bazaar_tracker.clone();
+        tokio::spawn(async move {
+            use hungz_flipper::types::{CommandPriority, CommandType};
+            // Wait for startup to complete
+            sleep(Duration::from_secs(120)).await;
+            loop {
+                // Sleep for slightly more than 5s to avoid perfectly syncing with the inventory sell loop
+                sleep(Duration::from_millis(5100)).await;
+                if bot_client_idle_order.state().allows_commands()
+                    && command_queue_idle_order.is_empty()
+                {
+                    let has_open_orders = bazaar_tracker_idle_order
+                        .get_orders()
+                        .iter()
+                        .any(|o| o.status == "open");
+                    if has_open_orders {
+                        tracing::info!("[IdleOrderCheck] Bot is idle and has open orders, queuing ManageOrders to check if outbidded");
+                        command_queue_idle_order.enqueue(
+                            CommandType::ManageOrders {
+                                cancel_open: false,
+                                target_item: None,
+                            },
+                            CommandPriority::Normal,
+                            false,
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    // Failsafe: cancel bazaar orders that have been open too long (likely outbidded)
+    if config.enable_bazaar_flips {
+        let bot_client_failsafe = bot_client.clone();
+        let command_queue_failsafe = command_queue.clone();
+        let bazaar_tracker_failsafe = bazaar_tracker.clone();
+        let config_loader_failsafe = config_loader.clone();
+        tokio::spawn(async move {
+            use hungz_flipper::types::{CommandPriority, CommandType};
+            // Wait for startup to complete
+            sleep(Duration::from_secs(120)).await;
+            loop {
+                sleep(Duration::from_secs(30)).await;
+                let cfg = config_loader_failsafe.load().unwrap_or_default();
+                let threshold = cfg.failsafe_requeue_seconds;
+                if threshold == 0 {
+                    continue; // failsafe disabled
+                }
+                if !bot_client_failsafe.state().allows_commands() {
+                    continue;
+                }
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let orders = bazaar_tracker_failsafe.get_orders();
+                for order in &orders {
+                    if order.status != "open" {
+                        continue;
+                    }
+                    let age = now.saturating_sub(order.placed_at);
+                    if age >= threshold {
+                        // This order has been open too long — cancel it
+                        if command_queue_failsafe.has_manage_orders() {
+                            tracing::debug!(
+                                "[Failsafe] Order '{}' is {}s old (threshold {}s) but ManageOrders already queued — skipping",
+                                order.item_name, age, threshold
+                            );
+                            break; // only one ManageOrders at a time
+                        }
+                        tracing::info!(
+                            "[Failsafe] Order '{}' ({}) has been open for {}s (threshold {}s) — cancelling via ManageOrders",
+                            order.item_name,
+                            if order.is_buy_order { "BUY" } else { "SELL" },
+                            age,
+                            threshold
+                        );
+                        command_queue_failsafe.enqueue(
+                            CommandType::ManageOrders {
+                                cancel_open: true,
+                                target_item: Some((order.item_name.clone(), order.is_buy_order)),
+                            },
+                            CommandPriority::Normal,
+                            true,
+                        );
+                        // Only cancel one per cycle to avoid flooding the queue
+                        break;
+                    }
                 }
             }
         });
@@ -3381,7 +4049,8 @@ async fn main() -> Result<()> {
                 let msg = serde_json::json!({
                     "type": "chatBatch",
                     "data": data_json
-                }).to_string();
+                })
+                .to_string();
                 if let Err(e) = ws_client_chat_batch.send_message(&msg).await {
                     debug!("[ChatBatch] Failed to send chatBatch to Coflnet: {}", e);
                 } else {
@@ -3396,7 +4065,7 @@ async fn main() -> Result<()> {
         let bot_client_ah_claim = bot_client.clone();
         let command_queue_ah_claim = command_queue.clone();
         tokio::spawn(async move {
-            use frikadellen_baf::types::{CommandPriority, CommandType};
+            use hungz_flipper::types::{CommandPriority, CommandType};
             // Give startup workflow time to complete before periodic checks.
             sleep(Duration::from_secs(120)).await;
             loop {
@@ -3427,7 +4096,7 @@ async fn main() -> Result<()> {
         let ws_client_idle = ws_client.clone();
         let last_listed_idle = last_auction_listed_at.clone();
         tokio::spawn(async move {
-            use frikadellen_baf::types::{CommandPriority, CommandType};
+            use hungz_flipper::types::{CommandPriority, CommandType};
             // Wait for startup to complete before starting idle checks.
             sleep(Duration::from_secs(INVENTORY_IDLE_SELLINVENTORY_SECS)).await;
             loop {
@@ -3491,17 +4160,22 @@ async fn main() -> Result<()> {
                         let upload_msg = serde_json::json!({
                             "type": "uploadInventory",
                             "data": inv_json
-                        }).to_string();
+                        })
+                        .to_string();
                         let _ = ws.send_message(&upload_msg).await;
                     }
                     let msg = serde_json::json!({
                         "type": "sellinventory",
                         "data": serde_json::to_string("").unwrap_or_default()
-                    }).to_string();
+                    })
+                    .to_string();
                     if let Err(e) = ws.send_message(&msg).await {
                         tracing::warn!("[IdleInventory] Failed to send sellinventory: {}", e);
                     } else {
-                        tracing::info!("[IdleInventory] Forced sellinventory after {}m idle", elapsed / 60);
+                        tracing::info!(
+                            "[IdleInventory] Forced sellinventory after {}m idle",
+                            elapsed / 60
+                        );
                     }
                 });
                 // Reset the timer so we don't spam every minute.
@@ -3511,7 +4185,7 @@ async fn main() -> Result<()> {
     }
 
     // Periodic log cleanup — delete archived logs older than 7 days once a day.
-    frikadellen_baf::logging::spawn_periodic_log_cleanup();
+    hungz_flipper::logging::spawn_periodic_log_cleanup();
 
     // Island guard: if "Your Island" is not in the scoreboard, send
     // /lobby → /play sb → /is to return to the island.
@@ -3521,7 +4195,7 @@ async fn main() -> Result<()> {
         let command_queue_island = command_queue.clone();
         let chat_tx_island = chat_tx.clone();
         tokio::spawn(async move {
-            use frikadellen_baf::types::{CommandType, CommandPriority, BotState};
+            use hungz_flipper::types::{BotState, CommandPriority, CommandType};
 
             // Give the startup workflow time to complete before we start checking.
             sleep(Duration::from_secs(60)).await;
@@ -3569,19 +4243,26 @@ async fn main() -> Result<()> {
                 // Exponential backoff: after repeated failures, wait longer to avoid
                 // infinite transfer cooldown when kicked from SkyBlock.
                 if consecutive_rejoin_attempts > 1 {
-                    let backoff_secs = std::cmp::min(REJOIN_BACKOFF_BASE_SECS * consecutive_rejoin_attempts as u64, REJOIN_MAX_BACKOFF_SECS);
+                    let backoff_secs = std::cmp::min(
+                        REJOIN_BACKOFF_BASE_SECS * consecutive_rejoin_attempts as u64,
+                        REJOIN_MAX_BACKOFF_SECS,
+                    );
                     let baf_msg = format!(
                         "§f[§4BAF§f]: §cRejoin attempt #{} — waiting {}s before retry...",
                         consecutive_rejoin_attempts, backoff_secs
                     );
                     print_mc_chat(&baf_msg);
                     let _ = chat_tx_island.send(baf_msg);
-                    warn!("[AFKHandler] Consecutive rejoin attempt #{} — backing off {}s", consecutive_rejoin_attempts, backoff_secs);
+                    warn!(
+                        "[AFKHandler] Consecutive rejoin attempt #{} — backing off {}s",
+                        consecutive_rejoin_attempts, backoff_secs
+                    );
                     sleep(Duration::from_secs(backoff_secs)).await;
                 }
 
                 // Not on island — send the return sequence.
-                let baf_msg = "§f[§4BAF§f]: §eNot detected on island — returning to island...".to_string();
+                let baf_msg =
+                    "§f[§4BAF§f]: §eNot detected on island — returning to island...".to_string();
                 print_mc_chat(&baf_msg);
                 let _ = chat_tx_island.send(baf_msg);
                 info!("[AFKHandler] Not on island — sending /lobby → /play sb → /is");
@@ -3591,7 +4272,9 @@ async fn main() -> Result<()> {
                 // Check bot state between steps: if the bot left Idle (e.g.
                 // a flip arrived), abort the sequence so we don't interfere.
                 command_queue_island.enqueue(
-                    CommandType::SendChat { message: "/lobby".to_string() },
+                    CommandType::SendChat {
+                        message: "/lobby".to_string(),
+                    },
                     CommandPriority::High,
                     false,
                 );
@@ -3602,7 +4285,9 @@ async fn main() -> Result<()> {
                 }
 
                 command_queue_island.enqueue(
-                    CommandType::SendChat { message: "/play sb".to_string() },
+                    CommandType::SendChat {
+                        message: "/play sb".to_string(),
+                    },
                     CommandPriority::High,
                     false,
                 );
@@ -3613,7 +4298,9 @@ async fn main() -> Result<()> {
                 }
 
                 command_queue_island.enqueue(
-                    CommandType::SendChat { message: "/is".to_string() },
+                    CommandType::SendChat {
+                        message: "/is".to_string(),
+                    },
                     CommandPriority::High,
                     false,
                 );
@@ -3657,11 +4344,16 @@ async fn main() -> Result<()> {
             tokio::spawn(async move {
                 // When remaining_secs is 0 (threshold already exceeded), wait
                 // 30s to allow the bot to connect and transfer the license.
-                let delay = if remaining_secs == 0 { 30 } else { remaining_secs };
+                let delay = if remaining_secs == 0 {
+                    30
+                } else {
+                    remaining_secs
+                };
                 sleep(Duration::from_secs(delay)).await;
                 info!(
                     "[AccountSwitch] Switch time reached — switching to account {} ({})",
-                    next_index + 1, next_name
+                    next_index + 1,
+                    next_name
                 );
                 // Clear session time for the outgoing account so it starts
                 // fresh when this account is used again.
@@ -3680,10 +4372,7 @@ async fn main() -> Result<()> {
                 if let Err(e) = std::fs::write(&index_path, next_index.to_string()) {
                     warn!("[AccountSwitch] Failed to write account index: {}", e);
                 }
-                let baf_msg = format!(
-                    "§f[§4BAF§f]: §eSwitching to account §b{}§e...",
-                    next_name
-                );
+                let baf_msg = format!("§f[§4BAF§f]: §eSwitching to account §b{}§e...", next_name);
                 print_mc_chat(&baf_msg);
                 let _ = chat_tx_switch.send(baf_msg);
                 info!("[AccountSwitch] Restarting process with next account...");
@@ -3704,8 +4393,12 @@ async fn main() -> Result<()> {
                 sleep(Duration::from_secs(30 * 60)).await;
                 let (ah, bz) = profit_tracker_webhook.totals();
                 let uptime = prev_secs_summary + started.elapsed().as_secs();
-                frikadellen_baf::webhook::send_webhook_profit_summary(
-                    &name, ah, bz, uptime, &webhook_url,
+                hungz_flipper::webhook::send_webhook_profit_summary(
+                    &name,
+                    ah,
+                    bz,
+                    uptime,
+                    &webhook_url,
                 )
                 .await;
             }
@@ -3743,7 +4436,9 @@ async fn main() -> Result<()> {
         let started_human = std::time::Instant::now();
         let macro_paused_human = macro_paused.clone();
         let min_interval = config.humanization_min_interval_minutes.max(5); // floor at 5 min
-        let max_interval = config.humanization_max_interval_minutes.max(min_interval + 1);
+        let max_interval = config
+            .humanization_max_interval_minutes
+            .max(min_interval + 1);
         let min_break = config.humanization_min_break_minutes.max(1); // floor at 1 min
         let max_break = config.humanization_max_break_minutes.max(min_break + 1);
         info!(
@@ -3751,8 +4446,8 @@ async fn main() -> Result<()> {
             min_interval, max_interval, min_break, max_break
         );
         tokio::spawn(async move {
+            use hungz_flipper::types::{CommandPriority, CommandType};
             use rand::Rng;
-            use frikadellen_baf::types::{CommandType, CommandPriority};
 
             // Sleep for a random interval between min and max
             let interval_secs = {
@@ -3791,12 +4486,8 @@ async fn main() -> Result<()> {
 
             // Notify via webhook
             if let Some(ref url) = webhook_url_human {
-                frikadellen_baf::webhook::send_webhook_rest_break_start(
-                    &ign_human,
-                    break_secs,
-                    url,
-                )
-                .await;
+                hungz_flipper::webhook::send_webhook_rest_break_start(&ign_human, break_secs, url)
+                    .await;
             }
 
             // Notify chat
@@ -3809,14 +4500,19 @@ async fn main() -> Result<()> {
 
             // Disconnect from the server via /quit
             command_queue_human.enqueue(
-                CommandType::SendChat { message: "/quit".to_string() },
+                CommandType::SendChat {
+                    message: "/quit".to_string(),
+                },
                 CommandPriority::Critical,
                 false,
             );
             // Give the command processor time to process /quit
             sleep(Duration::from_secs(3)).await;
 
-            info!("[Humanization] Disconnected — sleeping for {:.1}m", break_secs as f64 / 60.0);
+            info!(
+                "[Humanization] Disconnected — sleeping for {:.1}m",
+                break_secs as f64 / 60.0
+            );
 
             // Sleep for the break duration (fully disconnected)
             sleep(Duration::from_secs(break_secs)).await;
@@ -3825,7 +4521,7 @@ async fn main() -> Result<()> {
 
             // Send "break over" webhook before restart
             if let Some(ref url) = webhook_url_human {
-                frikadellen_baf::webhook::send_webhook_rest_break_end(&ign_human, url).await;
+                hungz_flipper::webhook::send_webhook_rest_break_end(&ign_human, url).await;
             }
 
             // Save session time right before restart so the gap is near-zero
@@ -3834,7 +4530,8 @@ async fn main() -> Result<()> {
             save_session_time(&session_times_path_human, &ign_human, total_secs);
             info!(
                 "[Humanization] Saved session time: {}s ({:.2}h) — restarting process",
-                total_secs, total_secs as f64 / 3600.0
+                total_secs,
+                total_secs as f64 / 3600.0
             );
 
             // Restart the process to reconnect
@@ -3843,26 +4540,37 @@ async fn main() -> Result<()> {
     }
 
     // Keep the application running
-    info!("BAF is now running. Type commands below or press Ctrl+C to exit.");
-    
+    info!("Hungz is now running. Type commands below or press Ctrl+C to exit.");
+
     // Wait until Ctrl+C (SIGINT) is received
     tokio::signal::ctrl_c().await?;
     info!("Received Ctrl+C — shutting down BAF...");
     // Save final session time before exit.
     let total_secs = previous_session_secs + session_start.elapsed().as_secs();
     save_session_time(&session_times_path, &ingame_name, total_secs);
-    info!("[SessionTime] Saved final session time for {}: {}s ({:.2}h)", ingame_name, total_secs, total_secs as f64 / 3600.0);
+    info!(
+        "[SessionTime] Saved final session time for {}: {}s ({:.2}h)",
+        ingame_name,
+        total_secs,
+        total_secs as f64 / 3600.0
+    );
     std::process::exit(0);
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{is_ban_disconnect, parse_cofl_profit_response, parse_cofl_bz_h_total_profit, parse_short_number, parse_bz_list_flip_detail, should_drop_bazaar_command_during_ah_pause, should_enqueue_periodic_auction_claim};
-    use frikadellen_baf::types::{BotState, CommandType};
+    use super::{
+        is_ban_disconnect, parse_bz_list_flip_detail, parse_cofl_bz_h_total_profit,
+        parse_cofl_profit_response, parse_short_number, should_drop_bazaar_command_during_ah_pause,
+        should_enqueue_periodic_auction_claim,
+    };
+    use hungz_flipper::types::{BotState, CommandType};
 
     #[test]
     fn detects_temporary_ban_disconnect() {
-        assert!(is_ban_disconnect("You are temporarily banned for 29d from this server!"));
+        assert!(is_ban_disconnect(
+            "You are temporarily banned for 29d from this server!"
+        ));
     }
 
     #[test]
@@ -3872,7 +4580,9 @@ mod tests {
 
     #[test]
     fn detects_permanent_ban_disconnect() {
-        assert!(is_ban_disconnect("You are permanently banned from this server!"));
+        assert!(is_ban_disconnect(
+            "You are permanently banned from this server!"
+        ));
     }
 
     #[test]
@@ -3883,15 +4593,23 @@ mod tests {
     #[test]
     fn detects_security_ban_disconnect() {
         assert!(is_ban_disconnect("Your account has been blocked."));
-        assert!(is_ban_disconnect("Find out more: https://www.hypixel.net/security-block"));
+        assert!(is_ban_disconnect(
+            "Find out more: https://www.hypixel.net/security-block"
+        ));
         assert!(is_ban_disconnect("Block ID: #ABC123"));
     }
 
     #[test]
     fn periodic_auction_claim_requires_idle_and_empty_queue() {
         assert!(should_enqueue_periodic_auction_claim(BotState::Idle, true));
-        assert!(!should_enqueue_periodic_auction_claim(BotState::ClaimingSold, true));
-        assert!(!should_enqueue_periodic_auction_claim(BotState::Idle, false));
+        assert!(!should_enqueue_periodic_auction_claim(
+            BotState::ClaimingSold,
+            true
+        ));
+        assert!(!should_enqueue_periodic_auction_claim(
+            BotState::Idle,
+            false
+        ));
     }
 
     #[test]
@@ -3923,24 +4641,32 @@ mod tests {
         // ManageOrders IS deferred during AH pause — it would block the AH
         // flip purchase.  A new ManageOrders is re-queued when flips resume.
         assert!(should_drop_bazaar_command_during_ah_pause(
-            &CommandType::ManageOrders { cancel_open: false, target_item: None },
+            &CommandType::ManageOrders {
+                cancel_open: false,
+                target_item: None
+            },
             paused,
         ));
         assert!(should_drop_bazaar_command_during_ah_pause(
-            &CommandType::ManageOrders { cancel_open: true, target_item: None },
+            &CommandType::ManageOrders {
+                cancel_open: true,
+                target_item: None
+            },
             paused,
         ));
     }
 
     #[test]
     fn parse_cofl_profit_response_82m() {
-        let msg = "According to our data TestUser made 82.7M in the last 0.05 days across 6 auctions";
+        let msg =
+            "According to our data TestUser made 82.7M in the last 0.05 days across 6 auctions";
         assert_eq!(parse_cofl_profit_response(msg), Some(82_700_000));
     }
 
     #[test]
     fn parse_cofl_profit_response_1b() {
-        let msg = "According to our data Player123 made 1.5B in the last 2.3 days across 142 auctions";
+        let msg =
+            "According to our data Player123 made 1.5B in the last 2.3 days across 142 auctions";
         assert_eq!(parse_cofl_profit_response(msg), Some(1_500_000_000));
     }
 
@@ -3997,19 +4723,19 @@ mod tests {
 
     #[test]
     fn parse_cofl_bz_h_negative_profit() {
-        let msg = "Total Profit: -234M";
+        let msg = "Bazaar Profit History for TestUser (last 0.05 days)\nTotal Profit: -234M";
         assert_eq!(parse_cofl_bz_h_total_profit(msg), Some(-234_000_000));
     }
 
     #[test]
     fn parse_cofl_bz_h_positive_profit() {
-        let msg = "Total Profit: 1.5B";
+        let msg = "Bazaar Profit History for TestUser (last 0.05 days)\nTotal Profit: 1.5B";
         assert_eq!(parse_cofl_bz_h_total_profit(msg), Some(1_500_000_000));
     }
 
     #[test]
     fn parse_cofl_bz_h_in_context() {
-        let msg = "Bazaar Profit History for TestUser (last 1 days)\nTotal Profit: -234M\nAverage Daily Profit: -33.5M";
+        let msg = "Bazaar Profit History for TestUser (last 0.5 days)\nTotal Profit: -234M\nAverage Daily Profit: -33.5M";
         assert_eq!(parse_cofl_bz_h_total_profit(msg), Some(-234_000_000));
     }
 

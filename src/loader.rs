@@ -1,10 +1,10 @@
-//! FrikadellenBAF-loader
+﻿//! HungzFlipper-loader
 //!
-//! A lightweight auto-updater for FrikadellenBAF.
+//! A lightweight auto-updater for HungzFlipper.
 //! On startup it checks GitHub for the latest release, downloads the main
 //! binary if a newer version is available, and then runs it.
 //!
-//! Usage: just run `FrikadellenBAF-loader` instead of `frikadellen_baf` directly.
+//! Usage: just run `HungzFlipper-loader` instead of `hungz_flipper` directly.
 
 use std::env;
 use std::fs;
@@ -12,19 +12,19 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const GITHUB_REPO: &str = "TreXito/frikadellen-baf-121";
+const GITHUB_REPO: &str = "vuthaihung0608/hungz-flipper";
 const GITHUB_API_BASE: &str = "https://api.github.com";
 
 /// The asset name for the main binary on the current platform.
 fn platform_asset_name() -> Option<&'static str> {
     if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        Some("frikadellen_baf-linux-x86_64")
+        Some("hungz_flipper-linux-x86_64")
     } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
-        Some("frikadellen_baf-macos-x86_64")
+        Some("hungz_flipper-macos-x86_64")
     } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        Some("frikadellen_baf-macos-arm64")
+        Some("hungz_flipper-macos-arm64")
     } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        Some("frikadellen_baf-windows-x86_64.exe")
+        Some("hungz_flipper-windows-x86_64.exe")
     } else {
         None
     }
@@ -33,9 +33,9 @@ fn platform_asset_name() -> Option<&'static str> {
 /// The filename of the main binary on the current platform.
 fn main_binary_name() -> &'static str {
     if cfg!(target_os = "windows") {
-        "frikadellen_baf.exe"
+        "hungz_flipper.exe"
     } else {
-        "frikadellen_baf"
+        "hungz_flipper"
     }
 }
 
@@ -87,7 +87,7 @@ fn check_and_update() -> anyhow::Result<()> {
     // Query the latest release from the GitHub API.
     let url = format!("{}/repos/{}/releases/latest", GITHUB_API_BASE, GITHUB_REPO);
     let client = reqwest::blocking::Client::builder()
-        .user_agent("FrikadellenBAF-loader/1.0")
+        .user_agent("HungzFlipper-loader/1.0")
         .timeout(std::time::Duration::from_secs(15))
         .build()?;
 
@@ -111,7 +111,7 @@ fn check_and_update() -> anyhow::Result<()> {
     );
 
     if local_version.as_deref() == Some(latest_tag.as_str()) {
-        println!("[Loader] Already up-to-date. Launching FrikadellenBAF…");
+        println!("[Loader] Already up-to-date. Launching HungzFlipper…");
         return Ok(());
     }
 
@@ -141,6 +141,7 @@ fn check_and_update() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(unreachable_code)]
 fn download_and_replace(
     bytes: &[u8],
     main_bin: &Path,
@@ -149,7 +150,7 @@ fn download_and_replace(
 ) -> anyhow::Result<()> {
     #[cfg(target_os = "windows")]
     {
-        let tmp = exe_dir.join("frikadellen_baf_new.exe");
+        let tmp = exe_dir.join("hungz_flipper_new.exe");
         fs::write(&tmp, bytes)?;
         // Write a small .bat that swaps the binary after the loader exits.
         // Paths come from env::current_exe() + fixed filenames, so they are
@@ -178,7 +179,7 @@ fn download_and_replace(
 
     #[cfg(not(target_os = "windows"))]
     {
-        let tmp = exe_dir.join("frikadellen_baf_new");
+        let tmp = exe_dir.join("hungz_flipper_new");
         fs::write(&tmp, bytes)?;
 
         // Make executable.

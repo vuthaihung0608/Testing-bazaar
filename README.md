@@ -1,38 +1,19 @@
 <div align="center">
 
-# Frikadellen BAF
+# Hungz Flipper
 
 ### Bazaar & Auction Flipper for Hypixel Skyblock
 
-A high-performance, Rust-powered macro that automates auction house sniping, bazaar trading, and inventory management on Hypixel Skyblock.
+A high-performance, Rust-powered bot that automates auction house sniping, bazaar trading, and inventory management on Hypixel Skyblock.
 
-[![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?logo=discord&logoColor=white)](https://discord.gg/42DvX6T9jh)
-[![Website](https://img.shields.io/badge/Website-auctionflipper.bz-blue)](https://auctionflipper.bz)
-[![Releases](https://img.shields.io/github/v/release/TreXito/frikadellen-baf-121?label=Latest%20Release)](../../releases/latest)
+[![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?logo=discord&logoColor=white)](https://discord.gg/V6y5TfAyyH)
 [![License](https://img.shields.io/badge/License-AGPLv3-green)](#license)
 
 </div>
 
 ---
 
-> **⚠️ Use at your own risk.** This is a macro — using it may result in a ban. If you do get banned, please share your logs in the [Discord server](https://discord.gg/42DvX6T9jh) so we can improve detection evasion.
-
----
-
-## Table of Contents
-
-- [Features](#features)
-- [Installation](#installation)
-- [Quick Start — Your First Run](#quick-start--your-first-run)
-- [Web Control Panel](#web-control-panel)
-- [Discord Webhooks](#discord-webhooks)
-- [Multi-Account Support](#multi-account-support)
-- [Humanization / Rest Breaks](#humanization--rest-breaks)
-- [Proxy Support](#proxy-support)
-- [Configuration Reference](#configuration-reference)
-- [Troubleshooting](#troubleshooting)
-- [Building from Source](#building-from-source)
-- [License](#license)
+> **⚠️ Use at your own risk.** This is a macro — using it may result in a ban. If you do get banned, please share your logs in the [Discord server](https://discord.gg/V6y5TfAyyH) so we can improve detection evasion.
 
 ---
 
@@ -42,22 +23,32 @@ A high-performance, Rust-powered macro that automates auction house sniping, baz
 Snipes BIN (Buy It Now) auctions in sub-second time. The bot runs on a patched engine at 300 FPS for ~1.65 ms packet detection latency, making purchases before most other players can react. Optional **fastbuy** mode skips the confirmation window entirely for even faster execution.
 
 ### 💰 Automatic Selling & Relisting
-When your inventory is full the bot enters selling mode — it lists items to the auction house, claims sold auctions, and relist items automatically. An idle failsafe triggers every 30 minutes if no auctions have been listed, forcing a sell cycle so nothing sits idle.
+When your inventory is full the bot enters selling mode — it lists items to the auction house, claims sold auctions, and relists items automatically. An idle failsafe triggers every 30 minutes if no auctions have been listed, forcing a sell cycle so nothing sits idle.
 
 ### 📊 Bazaar Trading
 Automated bazaar flip macro: places buy/sell orders, monitors fill status, collects filled orders, and cancels stale orders based on their age and value. Partially-filled buy orders are auto-cancelled and items relisted. The bot tracks order history and profit persistently across restarts.
 
 ### 🔄 Multi-Account Rotation
-Provide a comma-separated list of Minecraft usernames and set a rotation interval. The bot automatically switches between accounts on schedule, authenticating each one independently.
+Provide a comma-separated list of Minecraft usernames and set a rotation interval. The bot automatically switches between accounts on schedule, authenticating each one independently. COFL licenses are transferred automatically between accounts.
 
 ### 🌐 Web Control Panel
-A full-featured browser dashboard for monitoring and controlling the bot from any device. Includes real-time stats, profit charts, game chat, inventory view, and a configuration editor — all accessible through a single port. *(See [Web Control Panel](#web-control-panel) below for details.)*
+A full-featured browser dashboard for monitoring and controlling the bot from any device:
+- **5 Themes**: Midnight, Obsidian, Emerald, Sakura, Ocean
+- **Real-time updates** via WebSocket — no page refresh needed
+- **Tabs**: Controls, AH Profit, BZ Profit, Total Profit, Game View, Config
+- **Inventory viewer** with item icons and tooltips
+- **Active auctions** and **bazaar orders** dashboards
+- **In-game chat** from the browser
+- **Anonymize mode** for streaming/screenshots
+- **Password protection** with session-based auth
+- **Mobile friendly** — works on phones and tablets
+- **OpenGraph embeds** — Discord/social media link previews with live profit stats
 
 ### 📢 Discord Webhooks
-Get notified about flips, profits, and events directly in your Discord server. Separate webhook URLs for AH and Bazaar events, with optional user pings on legendary or divine flips.
+Rich embed notifications for every flip purchase, sale, and profit update — complete with item names, prices, buy-speed metrics, and optional user pings on legendary/divine flips. Separate webhook URLs for AH and Bazaar events.
 
-### 🛡️ Humanization
-Optional periodic rest breaks that simulate human behavior — the bot disconnects, waits a random duration, and reconnects. Fully configurable intervals and break lengths.
+### 🛡️ Humanization & Rest Breaks
+Optional periodic rest breaks that simulate human behavior — the bot disconnects, waits a random duration, and reconnects. Fully configurable intervals and break lengths. Discord notifications on break start/end.
 
 ### 🔒 Proxy Support
 Route the bot through a SOCKS5/HTTP proxy for VPS or network-restricted environments.
@@ -67,6 +58,22 @@ All activity is logged to `logs/latest.log`. Old logs are archived with timestam
 
 ### 🖥️ Cross-Platform
 Pre-built binaries for **Linux x86_64**, **macOS Intel**, **macOS Apple Silicon**, and **Windows x86_64**. A self-updating **loader** binary is also available that auto-downloads the latest version on each launch.
+
+### 🎯 Smart Order Management
+- Automatic collection of filled bazaar orders
+- Stale order auto-cancellation based on age and value
+- Partial-fill detection and handling
+- AH listing limit and daily sell value limit detection
+- GUI watchdog auto-closes stuck windows (5s timeout)
+- Command queue with priorities and AH preemption for bazaar
+
+### 📈 Profit Tracking
+Real-time profit tracking for both AH and Bazaar with:
+- Session-based profit charts (AH, BZ, and combined)
+- Per-hour profit calculation
+- Persistent profit across restarts
+- Coflnet `/cofl profit` and `/cofl bz h` integration
+- OG image generation for Discord embeds with live stats
 
 ---
 
@@ -78,10 +85,10 @@ Go to the [Releases page](../../releases/latest) and download the binary for you
 
 | Platform | Binary | Loader (auto-updater) |
 |---|---|---|
-| Linux x86_64 | `frikadellen_baf-linux-x86_64` | `FrikadellenBAF-loader-linux-x86_64` |
-| macOS Intel | `frikadellen_baf-macos-x86_64` | `FrikadellenBAF-loader-macos-x86_64` |
-| macOS Apple Silicon | `frikadellen_baf-macos-aarch64` | `FrikadellenBAF-loader-macos-aarch64` |
-| Windows | `frikadellen_baf-windows-x86_64.exe` | `FrikadellenBAF-loader-windows-x86_64.exe` |
+| Linux x86_64 | `hungz_flipper-linux-x86_64` | `HungzFlipper-loader-linux-x86_64` |
+| macOS Intel | `hungz_flipper-macos-x86_64` | `HungzFlipper-loader-macos-x86_64` |
+| macOS Apple Silicon | `hungz_flipper-macos-aarch64` | `HungzFlipper-loader-macos-aarch64` |
+| Windows | `hungz_flipper-windows-x86_64.exe` | `HungzFlipper-loader-windows-x86_64.exe` |
 
 > **Tip:** The **Loader** binary is recommended — it automatically checks for and downloads the latest version every time you run it.
 
@@ -90,15 +97,15 @@ Go to the [Releases page](../../releases/latest) and download the binary for you
 Using the loader (recommended):
 
 ```bash
-wget https://github.com/TreXito/frikadellen-baf-121/releases/latest/download/FrikadellenBAF-loader-linux-x86_64 && chmod +x FrikadellenBAF-loader-linux-x86_64
-./FrikadellenBAF-loader-linux-x86_64
+wget https://github.com/vuthaihung0608/hungz-flipper/releases/latest/download/HungzFlipper-loader-linux-x86_64 && chmod +x HungzFlipper-loader-linux-x86_64
+./HungzFlipper-loader-linux-x86_64
 ```
 
 Or the standalone binary:
 
 ```bash
-wget https://github.com/TreXito/frikadellen-baf-121/releases/latest/download/frikadellen_baf-linux-x86_64 && chmod +x frikadellen_baf-linux-x86_64
-./frikadellen_baf-linux-x86_64
+wget https://github.com/vuthaihung0608/hungz-flipper/releases/latest/download/hungz_flipper-linux-x86_64 && chmod +x hungz_flipper-linux-x86_64
+./hungz_flipper-linux-x86_64
 ```
 
 ### Windows
@@ -111,8 +118,8 @@ wget https://github.com/TreXito/frikadellen-baf-121/releases/latest/download/fri
 1. Download the binary for your chip (Intel or Apple Silicon) from [Releases](../../releases/latest)
 2. Open Terminal, navigate to the download folder, and run:
    ```bash
-   chmod +x frikadellen_baf-macos-*
-   ./frikadellen_baf-macos-*
+   chmod +x hungz_flipper-macos-*
+   ./hungz_flipper-macos-*
    ```
    If macOS blocks it, go to **System Settings → Privacy & Security** and click **Allow Anyway**.
 
@@ -145,76 +152,12 @@ If running on a VPS, replace `localhost` with your server's IP address. You can 
 
 | Tab | What It Shows |
 |---|---|
-| **Controls** | Connection status, uptime, session profit, active account, inventory grid, active auction listings, and a game chat box where you can type commands |
+| **Controls** | Connection status, uptime, session profit, active account, inventory grid, active auction listings, bazaar orders, and a game chat box where you can type commands |
 | **AH Profit** | Auction house profit chart and flip history |
 | **BZ Profit** | Bazaar profit chart and order history |
 | **Total Profit** | Combined AH + Bazaar profit overview |
 | **Game View** | Your character's full inventory and guild vault contents |
 | **Config** | GUI editor for all `config.toml` settings, organized by category — change settings without restarting the bot |
-
-### Panel Features
-
-- **5 Themes**: Midnight (default), Obsidian, Emerald, Sakura, Ocean — switch from the dropdown in the header
-- **Anonymize Mode**: One-click toggle to hide your in-game name in the panel (useful for streaming/screenshots)
-- **Real-Time Updates**: All data updates live via WebSocket — no need to refresh
-- **Mobile Friendly**: Works on phones and tablets
-
----
-
-## Discord Webhooks
-
-Send flip notifications and profit summaries to a Discord channel.
-
-1. In your Discord server, go to **Channel Settings → Integrations → Webhooks** and create a new webhook. Copy the URL.
-2. Set `webhook_url` in `config.toml` (or in the web panel Config tab) to the copied URL.
-3. *(Optional)* Set `bazaar_webhook_url` to a different webhook URL if you want Bazaar events in a separate channel.
-4. *(Optional)* Set `discord_id` to your Discord user ID (right-click your name → Copy User ID) to get **@pinged** when legendary or divine flips occur.
-
----
-
-## Multi-Account Support
-
-To rotate between multiple accounts:
-
-1. Set `ingame_name` to a comma-separated list of usernames:
-   ```toml
-   ingame_name = "Account1,Account2,Account3"
-   ```
-2. Set `multi_switch_time` to the number of hours between rotations:
-   ```toml
-   multi_switch_time = 6.0
-   ```
-3. Each account will be authenticated via Microsoft login on first use. The bot stores session tokens so you only need to authenticate once per account.
-
-Set `multi_switch_time = 0` or leave it unset to disable rotation.
-
----
-
-## Humanization / Rest Breaks
-
-Enable random periodic breaks to simulate a human player stepping away:
-
-```toml
-humanization_enabled = true
-humanization_min_interval_minutes = 45
-humanization_max_interval_minutes = 120
-humanization_min_break_minutes = 2
-humanization_max_break_minutes = 10
-```
-
-When a break triggers, the bot disconnects from the server, waits a random duration within the configured range, and then reconnects. Discord webhook notifications are sent when breaks start and end.
-
----
-
-## Proxy Support
-
-Route the bot's connection through a proxy:
-
-```toml
-proxy_enabled = true
-proxy_address = "host:port"
-proxy_credentials = "username:password"
-```
 
 ---
 
@@ -232,7 +175,6 @@ The `config.toml` file is created automatically on first run. You can edit it wi
 | `web_gui_password` | string | — | Optional password for the web panel |
 | `enable_console_input` | boolean | `true` | Allow typing commands in the terminal |
 | `share_legendary_flips` | boolean | `true` | Share legendary/divine flips with the community |
-| `websocket_url` | string | `wss://sky.coflnet.com/modsocket` | Coflnet WebSocket URL (advanced — don't change unless you know what you're doing) |
 
 ### Timing & Delays
 
@@ -322,30 +264,19 @@ rustup install nightly
 rustup default nightly
 
 # Clone and build
-git clone https://github.com/TreXito/frikadellen-baf-121.git
-cd frikadellen-baf-121
+git clone https://github.com/vuthaihung0608/hungz-flipper.git
+cd hungz-flipper
 cargo build --release
 ```
 
-The compiled binary will be at `target/release/frikadellen_baf`.
-
-### Launcher Script
-
-A convenience script is included in the repo:
-
-```bash
-chmod +x frikadellen-baf-121
-./frikadellen-baf-121
-```
-
-It checks for an existing binary, builds from source if needed, and runs the bot.
+The compiled binary will be at `target/release/hungz_flipper`.
 
 ---
 
 ## Links
 
-- **Discord**: [discord.gg/42DvX6T9jh](https://discord.gg/42DvX6T9jh)
-- **Website**: [auctionflipper.bz](https://auctionflipper.bz)
+- **Discord**: [discord.gg/V6y5TfAyyH](https://discord.gg/V6y5TfAyyH)
+- **GitHub**: [github.com/vuthaihung0608](https://github.com/vuthaihung0608)
 - **Releases**: [GitHub Releases](../../releases)
 - **Coflnet**: [sky.coflnet.com](https://sky.coflnet.com)
 

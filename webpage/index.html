@@ -3,7 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Frikadellen BAF — Bazaar &amp; Auction Flipper</title>
+    <meta name="theme-color" content="#06070a">
+    <meta name="description" content="Hungz Flipper — A high-performance Rust-powered macro for automated auction house sniping, bazaar trading, and inventory management on Hypixel Skyblock.">
+    <title>Hungz Flipper — Bazaar &amp; Auction Flipper</title>
     <link rel="stylesheet" href="style.css">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦀</text></svg>">
 </head>
@@ -12,14 +14,14 @@
 <!-- ── Navigation ─────────────────────────────────────────────── -->
 <nav id="navbar">
     <div class="nav-container">
-        <a href="#" class="logo"><span>Frikadellen</span> BAF</a>
+        <a href="#" class="logo"><span>Hungz</span> Flipper</a>
         <ul class="nav-links">
             <li><a href="#features">Features</a></li>
             <li><a href="#screenshots">Screenshots</a></li>
             <li><a href="#how-it-works">How It Works</a></li>
             <li><a href="#config">Configuration</a></li>
             <li><a href="#install">Install</a></li>
-            <li><a href="https://discord.gg/42DvX6T9jh" class="btn-nav" target="_blank" rel="noopener">Discord</a></li>
+            <li><a href="https://discord.gg/V6y5TfAyyH" class="btn-nav" target="_blank" rel="noopener">Discord</a></li>
         </ul>
     </div>
 </nav>
@@ -27,12 +29,13 @@
 <!-- ── Hero ────────────────────────────────────────────────────── -->
 <header id="hero">
     <div class="hero-bg"></div>
+    <canvas id="hero-particles"></canvas>
     <div class="hero-content">
-        <h1>Frikadellen <span class="accent">BAF</span></h1>
+        <h1>Hungz <span class="accent">Flipper</span></h1>
         <p class="tagline">A Coflnet-powered flipper that macros Auction House &amp; Bazaar with fast buy speeds, automatic selling, and order management — built in Rust&nbsp;🦀</p>
         <div class="hero-buttons">
             <a href="#install" class="btn btn-primary">Get Started</a>
-            <a href="https://github.com/TreXito/frikadellen-baf-121" class="btn btn-outline" target="_blank" rel="noopener">GitHub</a>
+            <a href="https://github.com/vuthaihung0608" class="btn btn-outline" target="_blank" rel="noopener">GitHub</a>
         </div>
         <div class="hero-stats">
             <div class="stat"><span class="stat-value">v3.0</span><span class="stat-label">Latest</span></div>
@@ -54,7 +57,7 @@
             <!-- TODO: Replace VIDEO_ID_HERE with your YouTube video ID (e.g. dQw4w9WgXcQ) -->
             <iframe
                 src="https://www.youtube.com/embed/VIDEO_ID_HERE?autoplay=1&mute=1&loop=1&playlist=VIDEO_ID_HERE&rel=0"
-                title="Frikadellen BAF Showcase"
+                title="Hungz Flipper Showcase"
                 style="border:none"
                 allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                 allowfullscreen
@@ -306,9 +309,9 @@
                     <span class="terminal-title">bash — Linux VPS</span>
                 </div>
                 <div class="terminal-body">
-                    <p><span class="prompt">$</span> <span class="cmd">wget</span> https://github.com/TreXito/frikadellen-baf-121/releases/latest/download/frikadellen_baf-linux-x86_64</p>
-                    <p><span class="prompt">$</span> <span class="cmd">chmod</span> +x frikadellen_baf-linux-x86_64</p>
-                    <p><span class="prompt">$</span> <span class="cmd">./frikadellen_baf-linux-x86_64</span></p>
+                    <p><span class="prompt">$</span> <span class="cmd">wget</span> https://github.com/vuthaihung0608/releases/latest/download/hungz_flipper-linux-x86_64</p>
+                    <p><span class="prompt">$</span> <span class="cmd">chmod</span> +x hungz_flipper-linux-x86_64</p>
+                    <p><span class="prompt">$</span> <span class="cmd">./hungz_flipper-linux-x86_64</span></p>
                 </div>
             </div>
         </div>
@@ -322,9 +325,9 @@
                     <span class="terminal-title">bash — Linux VPS (Loader)</span>
                 </div>
                 <div class="terminal-body">
-                    <p><span class="prompt">$</span> <span class="cmd">wget</span> https://github.com/TreXito/frikadellen-baf-121/releases/latest/download/FrikadellenBAF-loader-linux-x86_64</p>
-                    <p><span class="prompt">$</span> <span class="cmd">chmod</span> +x FrikadellenBAF-loader-linux-x86_64</p>
-                    <p><span class="prompt">$</span> <span class="cmd">./FrikadellenBAF-loader-linux-x86_64</span></p>
+                    <p><span class="prompt">$</span> <span class="cmd">wget</span> https://github.com/vuthaihung0608/releases/latest/download/HungzFlipper-loader-linux-x86_64</p>
+                    <p><span class="prompt">$</span> <span class="cmd">chmod</span> +x HungzFlipper-loader-linux-x86_64</p>
+                    <p><span class="prompt">$</span> <span class="cmd">./HungzFlipper-loader-linux-x86_64</span></p>
                 </div>
             </div>
             <p class="loader-note">The loader automatically downloads and runs the latest version.</p>
@@ -336,16 +339,15 @@
 <footer>
     <div class="container footer-content">
         <div class="footer-brand">
-            <span class="logo">Frikadellen BAF</span>
+            <span class="logo"><span>Hungz</span> Flipper</span>
             <p>Coflnet-powered Auction House &amp; Bazaar flipper for Hypixel SkyBlock</p>
         </div>
         <div class="footer-links">
-            <a href="https://auctionflipper.bz" target="_blank" rel="noopener">auctionflipper.bz</a>
-            <a href="https://github.com/TreXito/frikadellen-baf-121" target="_blank" rel="noopener">GitHub</a>
-            <a href="https://discord.gg/42DvX6T9jh" target="_blank" rel="noopener">Discord</a>
-            <a href="https://github.com/TreXito/frikadellen-baf-121/releases" target="_blank" rel="noopener">Releases</a>
+            <a href="https://github.com/vuthaihung0608" target="_blank" rel="noopener">GitHub</a>
+            <a href="https://discord.gg/V6y5TfAyyH" target="_blank" rel="noopener">Discord</a>
+            <a href="https://github.com/vuthaihung0608/releases" target="_blank" rel="noopener">Releases</a>
         </div>
-        <p class="footer-copy">&copy; 2026 <a href="https://trexito.com" target="_blank" rel="noopener">TreXito</a> &middot; AGPLv3 License</p>
+        <p class="footer-copy">&copy; 2026 Hungz Flipper &middot; AGPLv3 License</p>
     </div>
 </footer>
 

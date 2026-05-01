@@ -1,17 +1,17 @@
-[package]
-name = "frikadellen_baf"
+﻿[package]
+name = "hungz_flipper"
 version = "3.0.0"
 edition = "2021"
 authors = ["TreXito"]
-description = "Frikadellen BAF (Bazaar Auction Flipper) for Hypixel Skyblock - Rust port using Azalea"
+description = "Hungz Flipper (Bazaar Auction Flipper) for Hypixel Skyblock - Rust port using Azalea"
 license = "AGPL-3.0"
 
 [[bin]]
-name = "frikadellen_baf"
+name = "hungz_flipper"
 path = "src/main.rs"
 
 [[bin]]
-name = "FrikadellenBAF-loader"
+name = "HungzFlipper-loader"
 path = "src/loader.rs"
 
 [dependencies]

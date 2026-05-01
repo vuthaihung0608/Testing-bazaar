@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.Serialization;
@@ -400,10 +400,10 @@ public class TPM
 
 }
 
-/// FBAF (Frikadellen BAF) default settings for the managed backend UI.
+/// FHungz (Hungz Flipper) default settings for the managed backend UI.
 /// Analogous to TPM.NormalDefault but tuned for the Rust BAF client.
 /// Field names and defaults match the Config struct in src/config/types.rs.
-public class FBAF
+public class FHungz
 {
     public static readonly string NormalDefault = """
     {

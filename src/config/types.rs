@@ -1,6 +1,6 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use chrono::{DateTime, Utc};
 
 /// Serde helpers that serialize `None` as `""` and deserialize `""` as `None`.
 /// This ensures optional string config fields always appear in the saved TOML file
@@ -59,10 +59,10 @@ pub struct Config {
     /// means switch accounts every 12 hours. Set to `0` to disable automatic switching.
     #[serde(default, with = "opt_f64_as_zero")]
     pub multi_switch_time: Option<f64>,
-    
+
     #[serde(default = "default_websocket_url")]
     pub websocket_url: String,
-    
+
     #[serde(default = "default_web_gui_port")]
     pub web_gui_port: u16,
 
@@ -71,23 +71,26 @@ pub struct Config {
     /// Default: 500ms.
     #[serde(default = "default_command_delay_ms")]
     pub command_delay_ms: u64,
-    
+
     #[serde(default = "default_bed_spam_click_delay")]
     pub bed_spam_click_delay: u64,
-    
+
     #[serde(default)]
     pub bed_multiple_clicks_delay: u64,
-    
+
     /// How many ms before the COFL `purchaseAt` deadline to start clicking (default: 30).
     /// Only used when `freemoney = true`. Without freemoney, bed spam starts immediately
     /// using `bed_spam_click_delay` and this value is ignored.
     #[serde(default = "default_bed_pre_click_ms")]
     pub bed_pre_click_ms: u64,
-    
+
     #[serde(default = "default_bazaar_order_check_interval_seconds")]
     pub bazaar_order_check_interval_seconds: u64,
-    
-    #[serde(default = "default_bazaar_order_cancel_minutes_per_million", alias = "bazaar_order_cancel_minutes")]
+
+    #[serde(
+        default = "default_bazaar_order_cancel_minutes_per_million",
+        alias = "bazaar_order_cancel_minutes"
+    )]
     pub bazaar_order_cancel_minutes_per_million: u64,
 
     /// Bazaar sell tax rate as a percentage (e.g. 1.25 = 1.25%).
@@ -102,20 +105,27 @@ pub struct Config {
     /// "Sending packets too fast!" during bulk listings. Default: 1500ms.
     #[serde(default = "default_auction_listing_delay_ms")]
     pub auction_listing_delay_ms: u64,
-    
+
     #[serde(default = "default_true", alias = "bazaar_macro")]
     pub enable_bazaar_flips: bool,
 
     #[serde(default = "default_bazaar_active_flips_count")]
     pub bazaar_active_flips_count: u64,
-    
+
     #[serde(default = "default_bazaar_purse_limit_millions")]
     pub bazaar_purse_limit_millions: u64,
+
+    /// Failsafe: if a bazaar order has been "open" for longer than this many
+    /// seconds without filling, the bot will cancel it so the BazaarAuto loop
+    /// can re-place it at the current competitive price.  Set to 0 to disable.
+    /// Default: 180 (3 minutes).
+    #[serde(default = "default_failsafe_requeue_seconds")]
+    pub failsafe_requeue_seconds: u64,
 
     /// Enables taking AH flips
     #[serde(default = "default_true", alias = "ah_macro")]
     pub enable_ah_flips: bool,
-    
+
     #[serde(default)]
     pub bed_spam: bool,
 
@@ -127,17 +137,16 @@ pub struct Config {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub freemoney: Option<bool>,
-    
+
     #[serde(default = "default_true")]
     pub use_cofl_chat: bool,
-    
+
     #[serde(default)]
     pub auto_cookie: u64,
 
-    
     #[serde(default = "default_true")]
     pub enable_console_input: bool,
-    
+
     #[serde(default = "default_auction_duration_hours")]
     pub auction_duration_hours: u64,
 
@@ -146,21 +155,21 @@ pub struct Config {
     /// Default: 12.
     #[serde(default = "default_max_items_in_inventory")]
     pub max_items_in_inventory: u64,
-    
+
     /// Enable proxy for both the Minecraft and WebSocket connections.
     #[serde(default)]
     pub proxy_enabled: bool,
-    
+
     /// Proxy server address in `host:port` format, e.g. `"121.124.241.211:3313"`.
     /// Only used when `proxy_enabled = true`. Leave empty to disable.
     #[serde(default, with = "opt_string_as_empty")]
     pub proxy_address: Option<String>,
-    
+
     /// Proxy credentials in `username:password` format, e.g. `"myuser:mypassword"`.
     /// Leave empty if the proxy requires no authentication.
     #[serde(default, with = "opt_string_as_empty")]
     pub proxy_credentials: Option<String>,
-    
+
     #[serde(default)]
     /// Discord webhook URL for notifications.
     /// `None` = not yet configured (prompts on next startup).
@@ -178,7 +187,7 @@ pub struct Config {
     /// Leave empty to disable pings.
     #[serde(default, with = "opt_string_as_empty")]
     pub discord_id: Option<String>,
-    
+
     /// Password to protect the web control panel. Leave empty to disable authentication.
     #[serde(default, with = "opt_string_as_empty")]
     pub web_gui_password: Option<String>,
@@ -200,7 +209,7 @@ pub struct Config {
     /// toggle in the web panel that always defaults to OFF on page load.
     #[serde(default)]
     pub anonymize_webhook_name: bool,
-    
+
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub sessions: HashMap<String, CoflSession>,
 
@@ -267,6 +276,10 @@ fn default_bazaar_purse_limit_millions() -> u64 {
     20
 }
 
+fn default_failsafe_requeue_seconds() -> u64 {
+    180
+}
+
 fn default_bazaar_order_cancel_minutes_per_million() -> u64 {
     1
 }
@@ -319,12 +332,14 @@ impl Default for Config {
             bed_multiple_clicks_delay: 0,
             bed_pre_click_ms: default_bed_pre_click_ms(),
             bazaar_order_check_interval_seconds: default_bazaar_order_check_interval_seconds(),
-            bazaar_order_cancel_minutes_per_million: default_bazaar_order_cancel_minutes_per_million(),
+            bazaar_order_cancel_minutes_per_million:
+                default_bazaar_order_cancel_minutes_per_million(),
             bazaar_tax_rate: default_bazaar_tax_rate(),
             auction_listing_delay_ms: default_auction_listing_delay_ms(),
             enable_bazaar_flips: true,
             bazaar_active_flips_count: default_bazaar_active_flips_count(),
             bazaar_purse_limit_millions: default_bazaar_purse_limit_millions(),
+            failsafe_requeue_seconds: default_failsafe_requeue_seconds(),
             enable_ah_flips: true,
             bed_spam: false,
             skip: false,
@@ -416,7 +431,8 @@ mod tests {
 
     #[test]
     fn default_config_omits_freemoney() {
-        let toml = toml::to_string_pretty(&Config::default()).expect("default config should serialize");
+        let toml =
+            toml::to_string_pretty(&Config::default()).expect("default config should serialize");
         assert!(!toml.contains("freemoney"));
     }
 
@@ -428,7 +444,8 @@ mod tests {
 
     #[test]
     fn parses_bed_spam_click_delay() {
-        let config: Config = toml::from_str("bed_spam_click_delay = 125").expect("config should parse");
+        let config: Config =
+            toml::from_str("bed_spam_click_delay = 125").expect("config should parse");
         assert_eq!(config.bed_spam_click_delay, 125);
     }
 
@@ -446,7 +463,8 @@ mod tests {
 
     #[test]
     fn single_ingame_name() {
-        let config: Config = toml::from_str(r#"ingame_name = "Player1""#).expect("config should parse");
+        let config: Config =
+            toml::from_str(r#"ingame_name = "Player1""#).expect("config should parse");
         assert_eq!(config.ingame_names(), vec!["Player1"]);
     }
 
@@ -472,26 +490,29 @@ mod tests {
 
     #[test]
     fn parses_multi_switch_time() {
-        let config: Config = toml::from_str("multi_switch_time = 12.0").expect("config should parse");
+        let config: Config =
+            toml::from_str("multi_switch_time = 12.0").expect("config should parse");
         assert_eq!(config.multi_switch_time, Some(12.0));
     }
 
     #[test]
     fn multi_switch_time_zero_is_none() {
-        let config: Config = toml::from_str("multi_switch_time = 0.0").expect("config should parse");
+        let config: Config =
+            toml::from_str("multi_switch_time = 0.0").expect("config should parse");
         assert_eq!(config.multi_switch_time, None);
     }
 
     #[test]
     fn multi_switch_time_default_serializes_as_zero() {
-        let toml = toml::to_string_pretty(&Config::default()).expect("default config should serialize");
+        let toml =
+            toml::to_string_pretty(&Config::default()).expect("default config should serialize");
         assert!(toml.contains("multi_switch_time = 0.0"));
     }
 
     #[test]
     fn proxy_credentials_parsing() {
-        let config: Config =
-            toml::from_str(r#"proxy_credentials = "myuser:mypassword""#).expect("config should parse");
+        let config: Config = toml::from_str(r#"proxy_credentials = "myuser:mypassword""#)
+            .expect("config should parse");
         assert_eq!(config.proxy_username(), Some("myuser"));
         assert_eq!(config.proxy_password(), Some("mypassword"));
     }
@@ -512,18 +533,35 @@ mod tests {
 
     #[test]
     fn web_gui_password_empty_string_is_none() {
-        let config: Config = toml::from_str(r#"web_gui_password = """#).expect("config should parse");
+        let config: Config =
+            toml::from_str(r#"web_gui_password = """#).expect("config should parse");
         assert_eq!(config.web_gui_password, None);
     }
 
     #[test]
     fn optional_fields_appear_in_default_config() {
-        let toml = toml::to_string_pretty(&Config::default()).expect("default config should serialize");
-        assert!(toml.contains("web_gui_password"), "web_gui_password should appear in default config");
-        assert!(toml.contains("proxy_address"), "proxy_address should appear in default config");
-        assert!(toml.contains("proxy_credentials"), "proxy_credentials should appear in default config");
-        assert!(toml.contains("multi_switch_time"), "multi_switch_time should appear in default config");
-        assert!(toml.contains("discord_id"), "discord_id should appear in default config");
+        let toml =
+            toml::to_string_pretty(&Config::default()).expect("default config should serialize");
+        assert!(
+            toml.contains("web_gui_password"),
+            "web_gui_password should appear in default config"
+        );
+        assert!(
+            toml.contains("proxy_address"),
+            "proxy_address should appear in default config"
+        );
+        assert!(
+            toml.contains("proxy_credentials"),
+            "proxy_credentials should appear in default config"
+        );
+        assert!(
+            toml.contains("multi_switch_time"),
+            "multi_switch_time should appear in default config"
+        );
+        assert!(
+            toml.contains("discord_id"),
+            "discord_id should appear in default config"
+        );
     }
 
     #[test]
@@ -537,14 +575,18 @@ proxy_credentials = "myuser:mypassword"
         )
         .expect("config should parse");
         assert!(config.proxy_enabled);
-        assert_eq!(config.proxy_address.as_deref(), Some("121.124.241.211:3313"));
+        assert_eq!(
+            config.proxy_address.as_deref(),
+            Some("121.124.241.211:3313")
+        );
         assert_eq!(config.proxy_username(), Some("myuser"));
         assert_eq!(config.proxy_password(), Some("mypassword"));
     }
 
     #[test]
     fn default_config_has_no_skip_field() {
-        let toml = toml::to_string_pretty(&Config::default()).expect("default config should serialize");
+        let toml =
+            toml::to_string_pretty(&Config::default()).expect("default config should serialize");
         assert!(!toml.contains("[skip]"));
         assert!(!toml.contains("min_profit"));
     }
@@ -558,7 +600,8 @@ proxy_credentials = "myuser:mypassword"
 
     #[test]
     fn discord_id_parses_and_returns_active() {
-        let config: Config = toml::from_str(r#"discord_id = "123456789012345678""#).expect("config should parse");
+        let config: Config =
+            toml::from_str(r#"discord_id = "123456789012345678""#).expect("config should parse");
         assert_eq!(config.active_discord_id(), Some("123456789012345678"));
     }
 
@@ -588,8 +631,12 @@ proxy_credentials = "myuser:mypassword"
 
     #[test]
     fn skip_appears_in_default_config() {
-        let toml = toml::to_string_pretty(&Config::default()).expect("default config should serialize");
-        assert!(toml.contains("skip = false"), "skip should appear in default config");
+        let toml =
+            toml::to_string_pretty(&Config::default()).expect("default config should serialize");
+        assert!(
+            toml.contains("skip = false"),
+            "skip should appear in default config"
+        );
     }
 
     #[test]
@@ -601,29 +648,43 @@ proxy_credentials = "myuser:mypassword"
 
     #[test]
     fn bazaar_webhook_url_falls_back_to_regular() {
-        let config: Config = toml::from_str(r#"webhook_url = "https://discord.com/api/webhooks/main""#)
-            .expect("config should parse");
-        assert_eq!(config.active_bazaar_webhook_url(), Some("https://discord.com/api/webhooks/main"));
+        let config: Config =
+            toml::from_str(r#"webhook_url = "https://discord.com/api/webhooks/main""#)
+                .expect("config should parse");
+        assert_eq!(
+            config.active_bazaar_webhook_url(),
+            Some("https://discord.com/api/webhooks/main")
+        );
     }
 
     #[test]
     fn bazaar_webhook_url_overrides_regular() {
         let config: Config = toml::from_str(
             r#"webhook_url = "https://discord.com/api/webhooks/main"
-bazaar_webhook_url = "https://discord.com/api/webhooks/bazaar""#
-        ).expect("config should parse");
-        assert_eq!(config.active_bazaar_webhook_url(), Some("https://discord.com/api/webhooks/bazaar"));
+bazaar_webhook_url = "https://discord.com/api/webhooks/bazaar""#,
+        )
+        .expect("config should parse");
+        assert_eq!(
+            config.active_bazaar_webhook_url(),
+            Some("https://discord.com/api/webhooks/bazaar")
+        );
         // Regular webhook is unchanged
-        assert_eq!(config.active_webhook_url(), Some("https://discord.com/api/webhooks/main"));
+        assert_eq!(
+            config.active_webhook_url(),
+            Some("https://discord.com/api/webhooks/main")
+        );
     }
 
     #[test]
     fn bazaar_webhook_url_empty_string_falls_back() {
         let config: Config = toml::from_str(
             r#"webhook_url = "https://discord.com/api/webhooks/main"
-bazaar_webhook_url = """#
-        ).expect("config should parse");
-        assert_eq!(config.active_bazaar_webhook_url(), Some("https://discord.com/api/webhooks/main"));
+bazaar_webhook_url = """#,
+        )
+        .expect("config should parse");
+        assert_eq!(
+            config.active_bazaar_webhook_url(),
+            Some("https://discord.com/api/webhooks/main")
+        );
     }
-
 }

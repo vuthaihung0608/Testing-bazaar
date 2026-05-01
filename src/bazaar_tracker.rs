@@ -115,11 +115,14 @@ impl BazaarOrderTracker {
     /// so the caller can use price/amount for profit calculation.
     pub fn remove_order(&self, item_name: &str, is_buy_order: bool) -> Option<TrackedBazaarOrder> {
         let mut orders = self.orders.write();
-        let result = orders.iter().rposition(|o| {
-            (o.status == "open" || o.status == "filled")
-                && o.is_buy_order == is_buy_order
-                && normalize_for_match(&o.item_name) == normalize_for_match(item_name)
-        }).map(|pos| orders.remove(pos));
+        let result = orders
+            .iter()
+            .rposition(|o| {
+                (o.status == "open" || o.status == "filled")
+                    && o.is_buy_order == is_buy_order
+                    && normalize_for_match(&o.item_name) == normalize_for_match(item_name)
+            })
+            .map(|pos| orders.remove(pos));
         drop(orders);
         self.save_orders_to_disk();
         result
@@ -234,7 +237,8 @@ impl BazaarOrderTracker {
             let needed = data_entries.len();
             for (amount, price) in data_entries.iter().take(needed).skip(tracked) {
                 // Use title case for the item name from the first matching ingame order
-                let display_name = ingame_orders.iter()
+                let display_name = ingame_orders
+                    .iter()
                     .find(|(n, b, _, _)| normalize_for_match(n) == key.0 && *b == key.1)
                     .map(|(n, _, _, _)| n.clone())
                     .unwrap_or_else(|| key.0.clone());
@@ -254,7 +258,10 @@ impl BazaarOrderTracker {
         drop(orders);
         if removed > 0 || added > 0 {
             if added > 0 {
-                debug!("[BazaarTracker] Added {} in-game orders not previously tracked", added);
+                debug!(
+                    "[BazaarTracker] Added {} in-game orders not previously tracked",
+                    added
+                );
             }
             self.save_orders_to_disk();
         }
@@ -289,7 +296,8 @@ impl BazaarOrderTracker {
     /// Consume and return the stored buy cost for an item (if any).
     /// Used when a sell offer is collected to compute profit/loss.
     pub fn take_buy_cost(&self, item_name: &str) -> Option<(f64, u64)> {
-        let result = self.last_buy_costs
+        let result = self
+            .last_buy_costs
             .write()
             .remove(&normalize_for_match(item_name));
         self.save_buy_costs_to_disk();
@@ -326,20 +334,20 @@ impl BazaarOrderTracker {
         return;
         #[cfg(not(test))]
         {
-        let orders = self.orders.read().clone();
-        let path = Self::persistence_dir().join(ORDERS_FILE);
-        if let Err(e) = std::fs::create_dir_all(Self::persistence_dir()) {
-            warn!("[BazaarTracker] Failed to create persistence dir: {}", e);
-            return;
-        }
-        match serde_json::to_string(&orders) {
-            Ok(json) => {
-                if let Err(e) = std::fs::write(&path, json) {
-                    warn!("[BazaarTracker] Failed to write {}: {}", path.display(), e);
-                }
+            let orders = self.orders.read().clone();
+            let path = Self::persistence_dir().join(ORDERS_FILE);
+            if let Err(e) = std::fs::create_dir_all(Self::persistence_dir()) {
+                warn!("[BazaarTracker] Failed to create persistence dir: {}", e);
+                return;
             }
-            Err(e) => warn!("[BazaarTracker] Failed to serialize orders: {}", e),
-        }
+            match serde_json::to_string(&orders) {
+                Ok(json) => {
+                    if let Err(e) = std::fs::write(&path, json) {
+                        warn!("[BazaarTracker] Failed to write {}: {}", path.display(), e);
+                    }
+                }
+                Err(e) => warn!("[BazaarTracker] Failed to serialize orders: {}", e),
+            }
         }
     }
 
@@ -348,20 +356,20 @@ impl BazaarOrderTracker {
         return;
         #[cfg(not(test))]
         {
-        let costs = self.last_buy_costs.read().clone();
-        let path = Self::persistence_dir().join(BUY_COSTS_FILE);
-        if let Err(e) = std::fs::create_dir_all(Self::persistence_dir()) {
-            warn!("[BazaarTracker] Failed to create persistence dir: {}", e);
-            return;
-        }
-        match serde_json::to_string(&costs) {
-            Ok(json) => {
-                if let Err(e) = std::fs::write(&path, json) {
-                    warn!("[BazaarTracker] Failed to write {}: {}", path.display(), e);
-                }
+            let costs = self.last_buy_costs.read().clone();
+            let path = Self::persistence_dir().join(BUY_COSTS_FILE);
+            if let Err(e) = std::fs::create_dir_all(Self::persistence_dir()) {
+                warn!("[BazaarTracker] Failed to create persistence dir: {}", e);
+                return;
             }
-            Err(e) => warn!("[BazaarTracker] Failed to serialize buy costs: {}", e),
-        }
+            match serde_json::to_string(&costs) {
+                Ok(json) => {
+                    if let Err(e) = std::fs::write(&path, json) {
+                        warn!("[BazaarTracker] Failed to write {}: {}", path.display(), e);
+                    }
+                }
+                Err(e) => warn!("[BazaarTracker] Failed to serialize buy costs: {}", e),
+            }
         }
     }
 
@@ -374,9 +382,17 @@ impl BazaarOrderTracker {
                         debug!("[BazaarTracker] Loaded {} orders from disk", orders.len());
                         *self.orders.write() = orders;
                     }
-                    Err(e) => warn!("[BazaarTracker] Failed to parse {}: {}", orders_path.display(), e),
+                    Err(e) => warn!(
+                        "[BazaarTracker] Failed to parse {}: {}",
+                        orders_path.display(),
+                        e
+                    ),
                 },
-                Err(e) => warn!("[BazaarTracker] Failed to read {}: {}", orders_path.display(), e),
+                Err(e) => warn!(
+                    "[BazaarTracker] Failed to read {}: {}",
+                    orders_path.display(),
+                    e
+                ),
             }
         }
         let costs_path = Self::persistence_dir().join(BUY_COSTS_FILE);
@@ -387,9 +403,17 @@ impl BazaarOrderTracker {
                         debug!("[BazaarTracker] Loaded {} buy costs from disk", costs.len());
                         *self.last_buy_costs.write() = costs;
                     }
-                    Err(e) => warn!("[BazaarTracker] Failed to parse {}: {}", costs_path.display(), e),
+                    Err(e) => warn!(
+                        "[BazaarTracker] Failed to parse {}: {}",
+                        costs_path.display(),
+                        e
+                    ),
                 },
-                Err(e) => warn!("[BazaarTracker] Failed to read {}: {}", costs_path.display(), e),
+                Err(e) => warn!(
+                    "[BazaarTracker] Failed to read {}: {}",
+                    costs_path.display(),
+                    e
+                ),
             }
         }
     }
@@ -504,8 +528,8 @@ mod tests {
 
         let buy = tracker.remove_order("Coal", true).unwrap();
         let sell = tracker.remove_order("Coal", false).unwrap();
-        let profit = (sell.price_per_unit * sell.amount as f64)
-            - (buy.price_per_unit * buy.amount as f64);
+        let profit =
+            (sell.price_per_unit * sell.amount as f64) - (buy.price_per_unit * buy.amount as f64);
         assert_eq!(profit, 1000.0);
     }
 
@@ -596,8 +620,12 @@ mod tests {
         assert_eq!(removed, 1);
         let remaining = tracker.get_orders();
         assert_eq!(remaining.len(), 2);
-        assert!(remaining.iter().any(|o| o.item_name == "Coal" && o.is_buy_order));
-        assert!(remaining.iter().any(|o| o.item_name == "Diamond" && !o.is_buy_order));
+        assert!(remaining
+            .iter()
+            .any(|o| o.item_name == "Coal" && o.is_buy_order));
+        assert!(remaining
+            .iter()
+            .any(|o| o.item_name == "Diamond" && !o.is_buy_order));
     }
 
     #[test]
@@ -695,7 +723,10 @@ mod tests {
         let mut items = HashMap::new();
         items.insert("Enchanted Coal Block".to_string(), (50_000i64, 2u32));
         tracker.set_bz_list_profits(items);
-        assert_eq!(tracker.get_bz_list_profit("enchanted coal block"), Some(50_000));
+        assert_eq!(
+            tracker.get_bz_list_profit("enchanted coal block"),
+            Some(50_000)
+        );
     }
 
     #[test]
