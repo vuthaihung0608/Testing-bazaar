@@ -440,6 +440,24 @@ a{color:var(--accent2);text-decoration:none}
         <div class="cfg-row"><label class="cfg-label" for="cfg-bazaar_tax_rate">Tax Rate (%)</label><input class="cfg-input" id="cfg-bazaar_tax_rate" type="number" step="0.05" min="0" max="5"></div>
     </div>
 
+    <!-- Category: Item Selection -->
+    <div class="card" style="margin-bottom:16px">
+        <h2>🔍 Item Selection</h2>
+        <div class="cfg-row"><label class="cfg-label" for="cfg-item_volume">Minimum Volume</label><input class="cfg-input" id="cfg-item_volume" type="number" step="0.1" min="0"></div>
+        <div class="cfg-row"><label class="cfg-label" for="cfg-item_profit_per_hour">Minimum Profit/Hour</label><input class="cfg-input" id="cfg-item_profit_per_hour" type="number" step="1" min="0"></div>
+        <div class="cfg-row"><label class="cfg-label" for="cfg-item_buy_price">Maximum Buy Price</label><input class="cfg-input" id="cfg-item_buy_price" type="number" step="1" min="0"></div>
+        <div class="cfg-row"><label class="cfg-label" for="cfg-item_min_buy_price">Minimum Buy Price</label><input class="cfg-input" id="cfg-item_min_buy_price" type="number" step="1" min="0"></div>
+        <div class="cfg-row"><label class="cfg-label" for="cfg-item_ismanipulated">Is Manipulated (true/false/both)</label><input class="cfg-input" id="cfg-item_ismanipulated" type="text" placeholder="false"></div>
+        <div class="cfg-row" style="flex-direction:column;align-items:flex-start">
+            <label class="cfg-label" for="cfg-blacklist" style="margin-bottom:8px">Blacklist (comma-separated)</label>
+            <textarea class="cfg-input" id="cfg-blacklist" style="width:100%;max-width:100%;height:80px;resize:vertical" placeholder="ITEM_TAG, ANOTHER_TAG"></textarea>
+        </div>
+        <div class="cfg-row" style="flex-direction:column;align-items:flex-start">
+            <label class="cfg-label" for="cfg-whitelist" style="margin-bottom:8px">Whitelist (comma-separated item tags — bypass all filters)</label>
+            <textarea class="cfg-input" id="cfg-whitelist" style="width:100%;max-width:100%;height:80px;resize:vertical" placeholder="ITEM_TAG, ANOTHER_TAG"></textarea>
+        </div>
+    </div>
+
     <!-- Category: Humanization -->
     <div class="card" style="margin-bottom:16px">
         <h2>😴 Humanization / Rest Breaks</h2>
@@ -1414,6 +1432,9 @@ const CONFIG_FIELDS = {
     hypixel_api_key: {type:'string', default:''},
     proxy_address: {type:'string', default:''},
     proxy_credentials: {type:'string', default:''},
+    item_ismanipulated: {type:'string', default:'false'},
+    blacklist: {type:'string', default:''},
+    whitelist: {type:'string', default:''},
     // numbers
     multi_switch_time: {type:'float', default:0.0},
     web_gui_port: {type:'int', default:8080},
@@ -1435,6 +1456,10 @@ const CONFIG_FIELDS = {
     humanization_max_interval_minutes: {type:'int', default:120},
     humanization_min_break_minutes: {type:'int', default:2},
     humanization_max_break_minutes: {type:'int', default:10},
+    item_volume: {type:'float', default:500.0},
+    item_profit_per_hour: {type:'float', default:0.0},
+    item_buy_price: {type:'float', default:100000000.0},
+    item_min_buy_price: {type:'float', default:0.0},
     // booleans
     enable_ah_flips: {type:'bool', default:true},
     enable_bazaar_flips: {type:'bool', default:true},

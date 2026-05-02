@@ -46,30 +46,7 @@ mod opt_f64_as_zero {
     }
 }
 
-/// Configuration for bazaar item selection requirements
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ItemSelection {
-    #[serde(default = "default_min_volume")]
-    pub volume: f64,
-    #[serde(default = "default_min_profit_per_hour")]
-    pub profit_per_hour: f64,
-    #[serde(default = "default_max_buy_price")]
-    pub buy_price: f64,
-    /// "true", "false", or "both"
-    #[serde(default = "default_ismanipulated")]
-    pub ismanipulated: String,
-}
-
-impl Default for ItemSelection {
-    fn default() -> Self {
-        Self {
-            volume: default_min_volume(),
-            profit_per_hour: default_min_profit_per_hour(),
-            buy_price: default_max_buy_price(),
-            ismanipulated: default_ismanipulated(),
-        }
-    }
-}
+// Removed ItemSelection struct as it's now flattened into Config
 
 fn default_min_volume() -> f64 {
     500.0
@@ -81,6 +58,10 @@ fn default_min_profit_per_hour() -> f64 {
 
 fn default_max_buy_price() -> f64 {
     100_000_000.0 // 100m default
+}
+
+fn default_min_buy_price() -> f64 {
+    0.0
 }
 
 fn default_ismanipulated() -> String {
@@ -101,8 +82,16 @@ pub struct Config {
     #[serde(default, with = "opt_f64_as_zero")]
     pub multi_switch_time: Option<f64>,
 
-    #[serde(default)]
-    pub item_selection: ItemSelection,
+    #[serde(default = "default_min_volume")]
+    pub item_volume: f64,
+    #[serde(default = "default_min_profit_per_hour")]
+    pub item_profit_per_hour: f64,
+    #[serde(default = "default_max_buy_price")]
+    pub item_buy_price: f64,
+    #[serde(default = "default_min_buy_price")]
+    pub item_min_buy_price: f64,
+    #[serde(default = "default_ismanipulated")]
+    pub item_ismanipulated: String,
 
     #[serde(default = "default_websocket_url")]
     pub websocket_url: String,
@@ -279,6 +268,16 @@ pub struct Config {
     /// Maximum rest break duration in minutes. Default: 10.
     #[serde(default = "default_humanization_max_break_minutes")]
     pub humanization_max_break_minutes: u64,
+
+    /// Blacklisted item tags or names, comma-separated.
+    #[serde(default)]
+    pub blacklist: String,
+
+    /// Whitelisted item tags, comma-separated.
+    /// Items in this list bypass all filtering requirements
+    /// (volume, profit/hour, buy price, manipulation status).
+    #[serde(default)]
+    pub whitelist: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -369,7 +368,11 @@ impl Default for Config {
         Self {
             ingame_name: None,
             multi_switch_time: None,
-            item_selection: ItemSelection::default(),
+            item_volume: default_min_volume(),
+            item_profit_per_hour: default_min_profit_per_hour(),
+            item_buy_price: default_max_buy_price(),
+            item_min_buy_price: default_min_buy_price(),
+            item_ismanipulated: default_ismanipulated(),
             websocket_url: default_websocket_url(),
             web_gui_port: default_web_gui_port(),
             command_delay_ms: default_command_delay_ms(),
@@ -410,6 +413,8 @@ impl Default for Config {
             humanization_max_interval_minutes: default_humanization_max_interval_minutes(),
             humanization_min_break_minutes: default_humanization_min_break_minutes(),
             humanization_max_break_minutes: default_humanization_max_break_minutes(),
+            blacklist: String::new(),
+            whitelist: String::new(),
         }
     }
 }

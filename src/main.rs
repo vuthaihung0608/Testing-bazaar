@@ -894,6 +894,9 @@ async fn main() -> Result<()> {
         set
     }));
 
+    // Track if we have a stash to pick up
+    let has_stash = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
     // Spawn bot event handler
     let bot_client_clone = bot_client.clone();
     let ws_client_for_events = ws_client.clone();
@@ -908,6 +911,7 @@ async fn main() -> Result<()> {
     let enable_ah_flips_events = enable_ah_flips.clone();
     let profit_tracker_events = profit_tracker.clone();
     let bazaar_tracker_events = bazaar_tracker.clone();
+    let has_stash_events = has_stash.clone();
     let bz_top_items_events = bz_top_items.clone();
     let bz_blacklisted_items_events = bz_blacklisted_items.clone();
     // Tracks when the last AH auction was listed; the idle-inventory timer uses
@@ -940,6 +944,14 @@ async fn main() -> Result<()> {
                         tracing::info!(
                             "[CoflProfit] Updated AH total from Coflnet: {} coins",
                             profit
+                        );
+                    }
+
+                    // Check for stash message
+                    if clean.contains("stashed away") {
+                        has_stash_events.store(true, std::sync::atomic::Ordering::Relaxed);
+                        tracing::info!(
+                            "[Stash] Detected stashed items, will pick them up when idle"
                         );
                     }
 
@@ -3520,7 +3532,7 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Fetch top 15 bazaar flips via in-game command periodically (every 1 hour) and handle allocations
+    // Fetch top bazaar flips via in-game command periodically (every 1 hour) and handle allocations
     if config.enable_bazaar_flips {
         let command_queue_bz = command_queue.clone();
         let bazaar_flips_paused_bz = bazaar_flips_paused.clone();
@@ -3542,15 +3554,18 @@ async fn main() -> Result<()> {
                 loop {
                     if !bz_paused.load(std::sync::atomic::Ordering::Relaxed) {
                         let config = config_loader_fetch.load().unwrap_or_default();
-                        let item_sel = config.item_selection;
-
-                        let blacklist: std::collections::HashSet<String> =
-                            std::fs::read_to_string("blacklist.txt")
-                                .unwrap_or_default()
-                                .lines()
-                                .map(|l| l.trim().to_uppercase())
-                                .filter(|l| !l.is_empty() && !l.starts_with('#'))
-                                .collect();
+                        let blacklist: std::collections::HashSet<String> = config
+                            .blacklist
+                            .split(',')
+                            .map(|s| s.trim().to_uppercase())
+                            .filter(|s| !s.is_empty() && !s.starts_with('#'))
+                            .collect();
+                        let whitelist: std::collections::HashSet<String> = config
+                            .whitelist
+                            .split(',')
+                            .map(|s| s.trim().to_uppercase())
+                            .filter(|s| !s.is_empty() && !s.starts_with('#'))
+                            .collect();
                         let client = reqwest::Client::builder()
                             .user_agent("Mozilla/5.0")
                             .build()
@@ -3582,12 +3597,19 @@ async fn main() -> Result<()> {
                                             .unwrap_or("")
                                             .to_uppercase();
 
-                                        let skip_manipulated =
-                                            match item_sel.ismanipulated.to_lowercase().as_str() {
+                                        // Whitelisted items bypass manipulation and requirement filters
+                                        let is_whitelisted = whitelist.contains(&item_tag);
+
+                                        let skip_manipulated = if is_whitelisted {
+                                            false // never skip whitelisted items for manipulation
+                                        } else {
+                                            match config.item_ismanipulated.to_lowercase().as_str()
+                                            {
                                                 "true" => !is_manipulated, // if "true", skip if NOT manipulated
                                                 "both" => false, // don't skip based on manipulation
                                                 _ => is_manipulated, // default "false", skip if manipulated
-                                            };
+                                            }
+                                        };
 
                                         if !skip_manipulated
                                             && !blacklist.contains(&item_tag)
@@ -3611,11 +3633,18 @@ async fn main() -> Result<()> {
                                                     .and_then(|v| v.as_f64())
                                                     .unwrap_or(0.0);
 
-                                                if profit_per_hour >= item_sel.profit_per_hour
-                                                    && volume >= item_sel.volume
-                                                    && buy_price <= item_sel.buy_price
-                                                    && !item_name.is_empty()
-                                                {
+                                                // Whitelisted items bypass all requirement filters
+                                                let passes_requirements = is_whitelisted
+                                                    || (profit_per_hour
+                                                        >= config.item_profit_per_hour
+                                                        && volume >= config.item_volume
+                                                        && buy_price <= config.item_buy_price
+                                                        && buy_price >= config.item_min_buy_price);
+
+                                                if passes_requirements && !item_name.is_empty() {
+                                                    if is_whitelisted {
+                                                        tracing::info!("[BazaarAuto] Whitelisted item '{}' ({}) included — bypassing filters", item_name, item_tag);
+                                                    }
                                                     best_flips.push((
                                                         item_name,
                                                         profit_per_hour,
@@ -3630,16 +3659,11 @@ async fn main() -> Result<()> {
                                         b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
                                     });
 
-                                    let mut new_top = Vec::new();
-                                    for (name, p_h, s_p) in best_flips.into_iter().take(15) {
-                                        new_top.push((name, p_h, s_p));
-                                    }
-
-                                    if !new_top.is_empty() {
+                                    if !best_flips.is_empty() {
                                         let mut items_lock = top_items_clear.lock().await;
                                         items_lock.clear();
-                                        items_lock.extend(new_top);
-                                        info!("Updated top 15 bazaar flips from Coflnet spread API: {:?}", *items_lock);
+                                        items_lock.extend(best_flips);
+                                        info!("Updated top bazaar flips from Coflnet spread API (count: {})", items_lock.len());
                                     }
                                 }
                             }
@@ -3942,26 +3966,39 @@ async fn main() -> Result<()> {
         });
     }
 
-    // Idle bazaar inventory sell
+    // Idle bazaar inventory sell and stash pickup
     if config.enable_bazaar_flips {
         let bot_client_idle_bz = bot_client.clone();
         let command_queue_idle_bz = command_queue.clone();
+        let has_stash_idle = has_stash.clone();
         tokio::spawn(async move {
             use hungz_flipper::types::{CommandPriority, CommandType};
             // Wait for startup to complete
             sleep(Duration::from_secs(120)).await;
             loop {
                 sleep(Duration::from_secs(5)).await;
-                if bot_client_idle_bz.state().allows_commands()
-                    && command_queue_idle_bz.is_empty()
-                    && bot_client_idle_bz.empty_slot_count() < 36
+                if bot_client_idle_bz.state().allows_commands() && command_queue_idle_bz.is_empty()
                 {
-                    tracing::info!("[IdleInventoryBz] Bot is idle and has inventory items, queuing SellInventoryBz to check for sellable bazaar items");
-                    command_queue_idle_bz.enqueue(
-                        CommandType::SellInventoryBz,
-                        CommandPriority::Normal,
-                        false,
-                    );
+                    if has_stash_idle.load(std::sync::atomic::Ordering::Relaxed) {
+                        tracing::info!(
+                            "[IdleStash] Bot is idle and has stash, queuing /pickupstash"
+                        );
+                        has_stash_idle.store(false, std::sync::atomic::Ordering::Relaxed);
+                        command_queue_idle_bz.enqueue(
+                            CommandType::SendChat {
+                                message: "/pickupstash".to_string(),
+                            },
+                            CommandPriority::Normal,
+                            false,
+                        );
+                    } else if bot_client_idle_bz.empty_slot_count() < 36 {
+                        tracing::info!("[IdleInventoryBz] Bot is idle and has inventory items, queuing SellInventoryBz to check for sellable bazaar items");
+                        command_queue_idle_bz.enqueue(
+                            CommandType::SellInventoryBz,
+                            CommandPriority::Normal,
+                            false,
+                        );
+                    }
                 }
             }
         });
@@ -3996,6 +4033,148 @@ async fn main() -> Result<()> {
                             CommandPriority::Normal,
                             false,
                         );
+                    }
+                }
+            }
+        });
+    }
+
+    // Duplicate order combiner
+    // Checks for items with multiple open buy or sell orders and combines them.
+    if config.enable_bazaar_flips {
+        let bot_client_dup = bot_client.clone();
+        let command_queue_dup = command_queue.clone();
+        let bazaar_tracker_dup = bazaar_tracker.clone();
+        tokio::spawn(async move {
+            use hungz_flipper::types::{CommandPriority, CommandType};
+            let client = reqwest::Client::builder()
+                .user_agent("Mozilla/5.0")
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new());
+
+            // Wait for startup to complete
+            sleep(Duration::from_secs(120)).await;
+            loop {
+                sleep(Duration::from_secs(60)).await;
+                if !bot_client_dup.state().allows_commands() {
+                    continue;
+                }
+
+                let orders = bazaar_tracker_dup.get_orders();
+                let mut groups: std::collections::HashMap<
+                    (String, bool),
+                    Vec<hungz_flipper::bazaar_tracker::TrackedBazaarOrder>,
+                > = std::collections::HashMap::new();
+                for order in orders {
+                    if order.status == "open" {
+                        groups
+                            .entry((order.item_name.clone(), order.is_buy_order))
+                            .or_default()
+                            .push(order);
+                    }
+                }
+
+                let mut bz_data_fetched = false;
+                let mut bz_products = serde_json::Value::Null;
+
+                for ((item_name, is_buy_order), group) in groups {
+                    if group.len() > 1 {
+                        let total_amount: u64 = group.iter().map(|o| o.amount).sum();
+
+                        // We need the optimal price. We will fetch from Hypixel API.
+                        if !bz_data_fetched {
+                            if let Ok(resp) = client
+                                .get("https://api.hypixel.net/v2/skyblock/bazaar")
+                                .send()
+                                .await
+                            {
+                                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                                    bz_products = json["products"].clone();
+                                    bz_data_fetched = true;
+                                }
+                            }
+                        }
+
+                        let product_id = item_name.to_uppercase().replace(" ", "_");
+                        let mut optimal_price = 0.0;
+                        if bz_data_fetched && !bz_products.is_null() {
+                            if let Some(product) = bz_products.get(&product_id) {
+                                if let Some(qs) = product.get("quick_status") {
+                                    if is_buy_order {
+                                        // For buy order, use top order + 0.1
+                                        // Top order is quick_status.sellPrice
+                                        if let Some(sell_price) =
+                                            qs.get("sellPrice").and_then(|v| v.as_f64())
+                                        {
+                                            optimal_price = sell_price + 0.1;
+                                        }
+                                    } else {
+                                        // For sell order, use best offer - 0.1
+                                        // Best offer is quick_status.buyPrice
+                                        if let Some(buy_price) =
+                                            qs.get("buyPrice").and_then(|v| v.as_f64())
+                                        {
+                                            optimal_price = (buy_price - 0.1).max(0.1);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Fallback if API fails: max for buy, min for sell from existing orders
+                        if optimal_price == 0.0 {
+                            if is_buy_order {
+                                optimal_price = group
+                                    .iter()
+                                    .map(|o| o.price_per_unit)
+                                    .fold(0.0, |a, b| a.max(b));
+                            } else {
+                                optimal_price = group
+                                    .iter()
+                                    .map(|o| o.price_per_unit)
+                                    .fold(f64::MAX, |a, b| a.min(b));
+                            }
+                        }
+
+                        tracing::info!("[DuplicateOrderCombiner] Found {} duplicate {} orders for '{}'. Total amount: {}. Canceling and combining with price {:.1}.", group.len(), if is_buy_order { "BUY" } else { "SELL" }, item_name, total_amount, optimal_price);
+
+                        // Cancel the duplicates
+                        command_queue_dup.enqueue(
+                            CommandType::ManageOrders {
+                                cancel_open: true,
+                                target_item: Some((item_name.clone(), is_buy_order)),
+                            },
+                            CommandPriority::Normal,
+                            true,
+                        );
+
+                        // Enqueue combined order
+                        if is_buy_order {
+                            command_queue_dup.enqueue(
+                                CommandType::BazaarBuyOrder {
+                                    item_name: item_name.clone(),
+                                    item_tag: None,
+                                    amount: total_amount.min(71680), // Cap at rough stack limit
+                                    price_per_unit: optimal_price,
+                                },
+                                CommandPriority::Normal,
+                                true,
+                            );
+                        } else {
+                            command_queue_dup.enqueue(
+                                CommandType::BazaarSellOrder {
+                                    item_name: item_name.clone(),
+                                    item_tag: None,
+                                    amount: total_amount.min(71680),
+                                    price_per_unit: optimal_price,
+                                },
+                                CommandPriority::Normal,
+                                true,
+                            );
+                        }
+
+                        // We only process one combined order per cycle to avoid flooding
+                        break;
                     }
                 }
             }
