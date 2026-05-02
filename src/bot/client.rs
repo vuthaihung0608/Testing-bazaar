@@ -785,6 +785,18 @@ impl BotClient {
             .collect()
     }
 
+    /// Check if the bot is currently in a Skyblock server by looking at the scoreboard.
+    pub fn is_in_skyblock(&self) -> bool {
+        let lines = self.get_scoreboard_lines();
+        for line in lines {
+            let clean = remove_mc_colors(&line).to_uppercase();
+            if clean.contains("SKYBLOCK") {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Parse the player's current purse from the SkyBlock scoreboard sidebar.
     ///
     /// Looks for a line matching "Purse: X" or "Piggy: X" (Hypixel uses "Piggy" in
@@ -1431,6 +1443,39 @@ impl Default for BotClientState {
 }
 
 impl BotClientState {
+    /// Check if the bot is currently in a Skyblock server by looking at the scoreboard.
+    pub fn is_in_skyblock(&self) -> bool {
+        let sidebar = self.sidebar_objective.read().clone();
+        if let Some(sidebar_name) = sidebar {
+            let scores = self.scoreboard_scores.read();
+            if let Some(objective) = scores.get(&sidebar_name) {
+                // Build member → display text map from teams
+                let teams = self.scoreboard_teams.read();
+                let mut member_display: HashMap<String, String> =
+                    HashMap::with_capacity(teams.len());
+                for (_, (prefix, suffix, members)) in teams.iter() {
+                    let text = format!("{}{}", prefix, suffix);
+                    for member in members {
+                        member_display.insert(member.clone(), text.clone());
+                    }
+                }
+                drop(teams);
+
+                for (owner, (display, _)) in objective.iter() {
+                    let text = member_display
+                        .get(owner.as_str())
+                        .cloned()
+                        .unwrap_or_else(|| display.clone());
+                    let clean = remove_mc_colors(&text).to_uppercase();
+                    if clean.contains("SKYBLOCK") {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Read the player's current purse from the scoreboard sidebar.
     /// Mirrors BotClient::get_purse() for use within window/sign handlers.
     /// Uses team prefix+suffix display text (same as get_scoreboard_lines()) because
@@ -2312,6 +2357,34 @@ async fn event_handler(bot: Client, event: Event, state: BotClientState) -> Resu
         tokio::spawn(async move {
             command_processor(command_bot, command_state).await;
         });
+
+        // Periodic watchdog to check if bot is still in Skyblock
+        let watchdog_bot = bot.clone();
+        let watchdog_state = state.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+                let current_state = *watchdog_state.bot_state.read();
+
+                // Only check when idle, we don't want to interrupt active flips
+                if current_state == BotState::Idle {
+                    let joined = *watchdog_state.joined_skyblock.read();
+                    if joined && !watchdog_state.is_in_skyblock() {
+                        warn!("[Watchdog] Bot is not in Skyblock! Triggering rejoin...");
+                        *watchdog_state.joined_skyblock.write() = false;
+                        *watchdog_state.teleported_to_island.write() = false;
+
+                        let skyblock_join_time = watchdog_state.skyblock_join_time.clone();
+                        let bot_clone = watchdog_bot.clone();
+
+                        tokio::spawn(async move {
+                            send_chat_command(&bot_clone, "/skyblock");
+                        });
+                        *skyblock_join_time.write() = Some(tokio::time::Instant::now());
+                    }
+                }
+            }
+        });
     }
 
     match event {
@@ -2444,6 +2517,34 @@ async fn event_handler(bot: Client, event: Event, state: BotClientState) -> Resu
             // Detect purchase/sold messages and emit events
             let clean_message =
                 crate::bot::handlers::BotEventHandlers::remove_color_codes(&message);
+
+            // Check for kicks to lobby
+            if clean_message.contains("You are being sent to a lobby")
+                || clean_message.contains("Sending you to the lobby")
+                || clean_message.contains("Evicting you to a lobby")
+                || clean_message.contains("A disconnect occurred")
+                || clean_message.contains("Server restarting")
+                || clean_message.contains("The server is restarting")
+            {
+                warn!("[Location] Kicked to lobby detected: {}", clean_message);
+                let joined = *state.joined_skyblock.read();
+                if joined {
+                    *state.joined_skyblock.write() = false;
+                    *state.teleported_to_island.write() = false;
+
+                    let skyblock_join_time = state.skyblock_join_time.clone();
+                    let bot_clone = bot.clone();
+
+                    tokio::spawn(async move {
+                        tokio::time::sleep(tokio::time::Duration::from_secs(
+                            LOBBY_COMMAND_DELAY_SECS,
+                        ))
+                        .await;
+                        send_chat_command(&bot_clone, "/skyblock");
+                    });
+                    *skyblock_join_time.write() = Some(tokio::time::Instant::now());
+                }
+            }
 
             if clean_message.contains("You purchased") && clean_message.contains("coins!") {
                 // "You purchased <item> for <price> coins!"

@@ -46,6 +46,47 @@ mod opt_f64_as_zero {
     }
 }
 
+/// Configuration for bazaar item selection requirements
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ItemSelection {
+    #[serde(default = "default_min_volume")]
+    pub volume: f64,
+    #[serde(default = "default_min_profit_per_hour")]
+    pub profit_per_hour: f64,
+    #[serde(default = "default_max_buy_price")]
+    pub buy_price: f64,
+    /// "true", "false", or "both"
+    #[serde(default = "default_ismanipulated")]
+    pub ismanipulated: String,
+}
+
+impl Default for ItemSelection {
+    fn default() -> Self {
+        Self {
+            volume: default_min_volume(),
+            profit_per_hour: default_min_profit_per_hour(),
+            buy_price: default_max_buy_price(),
+            ismanipulated: default_ismanipulated(),
+        }
+    }
+}
+
+fn default_min_volume() -> f64 {
+    500.0
+}
+
+fn default_min_profit_per_hour() -> f64 {
+    0.0
+}
+
+fn default_max_buy_price() -> f64 {
+    100_000_000.0 // 100m default
+}
+
+fn default_ismanipulated() -> String {
+    "false".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// Ingame Minecraft username(s). Supports multiple comma-separated accounts:
@@ -59,6 +100,9 @@ pub struct Config {
     /// means switch accounts every 12 hours. Set to `0` to disable automatic switching.
     #[serde(default, with = "opt_f64_as_zero")]
     pub multi_switch_time: Option<f64>,
+
+    #[serde(default)]
+    pub item_selection: ItemSelection,
 
     #[serde(default = "default_websocket_url")]
     pub websocket_url: String,
@@ -325,6 +369,7 @@ impl Default for Config {
         Self {
             ingame_name: None,
             multi_switch_time: None,
+            item_selection: ItemSelection::default(),
             websocket_url: default_websocket_url(),
             web_gui_port: default_web_gui_port(),
             command_delay_ms: default_command_delay_ms(),

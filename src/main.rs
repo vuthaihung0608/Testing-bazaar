@@ -3536,10 +3536,21 @@ async fn main() -> Result<()> {
             // Loop for requesting new BZ top items every 12 hours
             let bz_paused = bazaar_flips_paused_bz.clone();
             let top_items_clear = bz_top_items_calc.clone();
+            let config_loader_fetch = config_loader_bz.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(tokio::time::Duration::from_secs(30)).await; // initial delay
                 loop {
                     if !bz_paused.load(std::sync::atomic::Ordering::Relaxed) {
+                        let config = config_loader_fetch.load().unwrap_or_default();
+                        let item_sel = config.item_selection;
+
+                        let blacklist: std::collections::HashSet<String> =
+                            std::fs::read_to_string("blacklist.txt")
+                                .unwrap_or_default()
+                                .lines()
+                                .map(|l| l.trim().to_uppercase())
+                                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                                .collect();
                         let client = reqwest::Client::builder()
                             .user_agent("Mozilla/5.0")
                             .build()
@@ -3558,7 +3569,30 @@ async fn main() -> Result<()> {
                                             .get("isManipulated")
                                             .and_then(|v| v.as_bool())
                                             .unwrap_or(false);
-                                        if !is_manipulated {
+
+                                        let item_name = item
+                                            .get("itemName")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .to_string();
+
+                                        let item_tag = item
+                                            .get("tag")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .to_uppercase();
+
+                                        let skip_manipulated =
+                                            match item_sel.ismanipulated.to_lowercase().as_str() {
+                                                "true" => !is_manipulated, // if "true", skip if NOT manipulated
+                                                "both" => false, // don't skip based on manipulation
+                                                _ => is_manipulated, // default "false", skip if manipulated
+                                            };
+
+                                        if !skip_manipulated
+                                            && !blacklist.contains(&item_tag)
+                                            && !blacklist.contains(&item_name.to_uppercase())
+                                        {
                                             if let Some(flip) = item.get("flip") {
                                                 let volume = flip
                                                     .get("volume")
@@ -3572,14 +3606,14 @@ async fn main() -> Result<()> {
                                                     .get("sellPrice")
                                                     .and_then(|v| v.as_f64())
                                                     .unwrap_or(0.0);
-                                                let item_name = item
-                                                    .get("itemName")
-                                                    .and_then(|v| v.as_str())
-                                                    .unwrap_or("")
-                                                    .to_string();
+                                                let buy_price = flip
+                                                    .get("buyPrice")
+                                                    .and_then(|v| v.as_f64())
+                                                    .unwrap_or(0.0);
 
-                                                if profit_per_hour > 0.0
-                                                    && volume > 500.0
+                                                if profit_per_hour >= item_sel.profit_per_hour
+                                                    && volume >= item_sel.volume
+                                                    && buy_price <= item_sel.buy_price
                                                     && !item_name.is_empty()
                                                 {
                                                     best_flips.push((

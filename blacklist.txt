@@ -1,0 +1,4 @@
+# Add item tags or names here to ignore them in bazaar flips
+# Items are case-insensitive and can be exact matches or partial matches depending on implementation.
+ENCHANTED_PUMPKIN
+ESSENCE_FOREST
